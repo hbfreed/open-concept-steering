@@ -8,7 +8,6 @@ from typing import Dict, List, Tuple
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from datetime import datetime
-from accelerate import PartialState
 from open_concept_steering.utils.activation_hooks import ResidualStreamCollector
 
 def set_all_seeds(seed: int = 42):
@@ -226,9 +225,9 @@ if __name__ == "__main__":
     # Run collection for different model variants with same seed
     create_dataset(
         dataset_name="HuggingFaceFW/fineweb",
-        model_checkpoint="meta-llama/Llama-3.2-3B-Instruct",
-        output_file="residual_stream_activations_llama3b.h5",
-        batch_size=64,
+        model_checkpoint="meta-llama/Llama-3.2-1B-Instruct",
+        output_file="residual_stream_activations_llama1b_bf16.h5",
+        batch_size=80,
         shuffle_buffer_size=10_000,
         seed=SEED
     )
