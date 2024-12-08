@@ -22,21 +22,7 @@ Each model repository includes:
 
 ## Quick Start
 
-```python
-from open_concept_steering import ModelLoader, SAETrainer, FeatureScanner, ChatInterface
-
-# Load a model and train SAE
-model = ModelLoader.load("llama2")
-sae = SAETrainer.train(model)
-
-# Find features for a concept
-scanner = FeatureScanner(sae)
-feature = scanner.find_feature("golden gate bridge")
-
-# Chat with the steered model
-chat = ChatInterface(model)
-chat.run(amplified_features=[feature])
-```
+In Progress!
 
 ## Examples
 
