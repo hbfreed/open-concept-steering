@@ -5,7 +5,6 @@ from tqdm import tqdm
 import time
 import random
 from typing import Dict, List, Tuple
-from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, BitsAndBytesConfig
 from accelerate import PartialState
 from datasets import load_dataset
