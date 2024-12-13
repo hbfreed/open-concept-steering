@@ -36,7 +36,7 @@ def train(
     """Train Sparse Autoencoder with DDP."""
     
     # Initialize accelerator
-    accelerator = Accelerator()
+    accelerator = Accelerator(mixed_precision='bf16') #used mixed precision training with accelerate
     
     # Set seeds for reproducibility
     set_seed(seed)
@@ -65,6 +65,8 @@ def train(
     
     # Initialize model and move to device
     model = SAE(input_size, hidden_size, init_scale)
+    model = model.to(memory_format=torch.channels_last)
+    model = torch.compile(model,mode='max-autotune',fullgraph=True)
     
     # Setup optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -94,6 +96,7 @@ def train(
             
         for batch in train_loader:
             # Forward pass
+            batch = batch.to(memory_format=torch.channels_last)
             reconstruction, features = model(batch)
             loss = model.compute_loss(batch, reconstruction, features, lambda_=lambda_l1)
             
@@ -166,10 +169,10 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     # Add all training arguments
-    parser.add_argument('--data_path', type=str, required=True)
-    parser.add_argument('--out_dir', type=str, required=True) 
-    parser.add_argument('--input_size', type=int, required=True)
-    parser.add_argument('--hidden_size', type=int, required=True)
+    parser.add_argument('--data_path', type=str, default='data/residual_stream_activations_llama1b_bf16.h5')
+    parser.add_argument('--out_dir', type=str, default='out/sae_8k') 
+    parser.add_argument('--input_size', type=int, default=2048)
+    parser.add_argument('--hidden_size', type=int, default=8192)
     parser.add_argument('--init_scale', type=float, default=0.1)
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--learning_rate', type=float, default=1e-3)

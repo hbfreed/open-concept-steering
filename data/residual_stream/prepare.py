@@ -224,6 +224,7 @@ def create_dataset(
         print(f"Time elapsed: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}")
 
 if __name__ == "__main__":
+    torch.backends.cuda.matmul.allow_tf32 = True
     torch.set_float32_matmul_precision('high')
     SEED = 42
     
