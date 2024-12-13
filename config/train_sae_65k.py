@@ -27,7 +27,7 @@ config = {
     # System params
     'device': 'cuda',
     'dtype': torch.bfloat16,
-    'num_workers': 8,
+    'num_workers': 24,
     
     # Wandb params
     'wandb_project': 'sae-training',
