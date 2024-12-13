@@ -33,7 +33,7 @@ config = {
     # Wandb params
     'wandb_project': 'sae-training',
     'wandb_name': 'sae_32k',
-    'wandb_entity': None,  # Add your wandb entity here
+    'wandb_entity': "hbfreed",  # Add your wandb entity here
 }
 
 if __name__ == '__main__':
