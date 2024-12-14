@@ -47,7 +47,8 @@ class SAE(nn.Module):
             lambda_: Sparsity coefficient (default 5.0)
         """
         # MSE loss
-        mse_loss = F.mse_loss(reconstruction, x)
+        # mse_loss = F.mse_loss(reconstruction, x)
+        mse_loss = ((reconstruction - x) ** 2).mean()  # Manual MSE calculation to avoid F.mse_loss autocasting
         
         # L1 sparsity loss with decoder norms
         decoder_norms = self.get_decoder_norms()

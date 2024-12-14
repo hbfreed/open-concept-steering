@@ -6,7 +6,7 @@ from model import SAE
 from data.residual_stream.dataloader import get_dataloader
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-from safetensors.torch import save_file
+from safetensors.torch import save_model
 
 def train(
     # Data params
@@ -64,8 +64,8 @@ def train(
         out_dir.mkdir(parents=True, exist_ok=True)
     
     # Initialize model and move to device
-    model = SAE(input_size, hidden_size, init_scale)
-    model = model.to(memory_format=torch.channels_last)
+    model = SAE(input_size, hidden_size, init_scale).to(torch.bfloat16)
+    compute_loss = model.compute_loss #when we use accelerate, the model is wrapped in a DDP module, so we need to extract the loss function from the DDP module
     model = torch.compile(model,mode='max-autotune',fullgraph=True)
     
     # Setup optimizer
@@ -82,11 +82,11 @@ def train(
     model, optimizer, train_loader = accelerator.prepare(
         model, optimizer, train_loader
     )
-    
     # Training loop
     iter_num = 0
     best_loss = float('inf')
-    
+    if accelerator.is_main_process:
+        print(f"using {len(train_loader)}*{batch_size}*{accelerator.num_processes}={len(train_loader)*batch_size*accelerator.num_processes} samples for training")
     for epoch in range(num_epochs):
         progress_bar = tqdm(
             total=len(train_loader),
@@ -96,10 +96,10 @@ def train(
             
         for batch in train_loader:
             # Forward pass
-            batch = batch.to(memory_format=torch.channels_last)
             reconstruction, features = model(batch)
-            loss = model.compute_loss(batch, reconstruction, features, lambda_=lambda_l1)
-            
+            if accelerator.is_main_process:
+                print(f"reconstruction:{reconstruction}, features:{features}")
+            loss = compute_loss(batch, reconstruction, features, lambda_=lambda_l1)
             # Backward pass
             optimizer.zero_grad()
             accelerator.backward(loss)
@@ -135,17 +135,16 @@ def train(
                 # Unwrap model before saving
                 unwrapped_model = accelerator.unwrap_model(model)
                 checkpoint = {
-                    'optimizer': optimizer.state_dict(),
-                    'iter_num': iter_num,
-                    'epoch': epoch,
-                    'config': wandb.config if accelerator.is_main_process else None
+                    'iter_num': str(iter_num),
+                    'epoch': str(epoch),
+                    'config': str(wandb.config if accelerator.is_main_process else None)
                 }
-                save_file(model=unwrapped_model,metadata=checkpoint, filename=out_dir / f'checkpoint_{iter_num:07d}.safetensors')
+                save_model(unwrapped_model,metadata=checkpoint, filename=out_dir / f'checkpoint_{iter_num:07d}.safetensors')
                 
                 # Save best model
                 if loss.item() < best_loss:
                     best_loss = loss.item()
-                    save_file(model=unwrapped_model,metadata=checkpoint, filename=out_dir / 'best_model.pt')
+                    save_model(unwrapped_model,metadata=checkpoint, filename=out_dir / 'best_model.safetensors')
             
             iter_num += 1
             progress_bar.update(1)
@@ -155,28 +154,29 @@ def train(
     # Save final model on main process
     if accelerator.is_main_process:
         unwrapped_model = accelerator.unwrap_model(model)
-        save_file(model=unwrapped_model,medatada={
-            'model': unwrapped_model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'iter_num': iter_num,
-            'epoch': epoch,
-            'config': wandb.config if accelerator.is_main_process else None
-        }, filename=out_dir / 'final_model.pt')
+        save_model(unwrapped_model,medatada={
+            'iter_num': str(iter_num),
+            'epoch': str(epoch),
+            'config': str(wandb.config if accelerator.is_main_process else None)
+        }, filename=out_dir / 'final_model.safetensors')
         
         wandb.finish()
 
 if __name__ == '__main__':
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
     import argparse
     parser = argparse.ArgumentParser()
     # Add all training arguments
     parser.add_argument('--data_path', type=str, default='data/residual_stream_activations_llama1b_bf16.h5')
     parser.add_argument('--out_dir', type=str, default='out/sae_8k') 
     parser.add_argument('--input_size', type=int, default=2048)
-    parser.add_argument('--hidden_size', type=int, default=8192)
+    parser.add_argument('--hidden_size', type=int, default=262144)
     parser.add_argument('--init_scale', type=float, default=0.1)
     parser.add_argument('--batch_size', type=int, default=512)
-    parser.add_argument('--learning_rate', type=float, default=1e-3)
-    parser.add_argument('--num_epochs', type=int, default=10)
+    parser.add_argument('--learning_rate', type=float, default=1e-4)
+    parser.add_argument('--num_epochs', type=int, default=1)
     parser.add_argument('--lambda_l1', type=float, default=5.0)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--seed', type=int, default=42)
