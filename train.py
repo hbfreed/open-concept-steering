@@ -69,8 +69,8 @@ def train(
     # model = torch.compile(model,mode='max-autotune',fullgraph=True)
     
     # Setup optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    # 
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0) #anthropic says no weight decay in updates on training saes
+
     # Create dataloader
     train_loader = get_dataloader(
         data_path,
@@ -175,15 +175,15 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     # Add all training arguments
-    parser.add_argument('--data_path', type=str, default='data/residual_stream_activations_llama1b_bf16.h5')
+    parser.add_argument('--data_path', type=str, default='/home/henry/Documents/PythonProjects/open-concept-steering-dataset/residual_stream_activations_llama1b_bf16.h5')
     parser.add_argument('--out_dir', type=str, default='out/sae_tiny_test') 
     parser.add_argument('--input_size', type=int, default=2048)
-    parser.add_argument('--hidden_size', type=int, default=8192)
+    parser.add_argument('--hidden_size', type=int, default=65536)
     parser.add_argument('--init_scale', type=float, default=0.1)
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--learning_rate', type=float, default=5e-5)
+    parser.add_argument('--learning_rate', type=float, default=5e-5) #"reasonable default" according to anthropic
     parser.add_argument('--num_epochs', type=int, default=100)
-    parser.add_argument('--lambda_l1', type=float, default=0.01)
+    parser.add_argument('--lambda_l1', type=float, default=0.0001)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--wandb_project', type=str, default='sae-training')
