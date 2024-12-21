@@ -66,11 +66,11 @@ def train(
     # Initialize model and move to device
     model = SAE(input_size, hidden_size, init_scale).to(torch.bfloat16)
     compute_loss = model.compute_loss #when we use accelerate, the model is wrapped in a DDP module, so we need to extract the loss function from the DDP module
-    model = torch.compile(model,mode='max-autotune',fullgraph=True)
+    # model = torch.compile(model,mode='max-autotune',fullgraph=True)
     
     # Setup optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    
+    # 
     # Create dataloader
     train_loader = get_dataloader(
         data_path,
@@ -94,13 +94,19 @@ def train(
             disable=not accelerator.is_main_process
         )
             
-        for batch in train_loader:
-            # Forward pass
+        for idx,batch in enumerate(train_loader):
+            if idx >=10:
+                break
             reconstruction, features = model(batch)
-            if accelerator.is_main_process:
-                print(f"reconstruction:{reconstruction}, features:{features}")
+            if idx == 1:
+                print(f"Batch {idx}, epoch {epoch}")
             loss = compute_loss(batch, reconstruction, features, lambda_=lambda_l1)
-            # Backward pass
+            if idx == 1:
+                print(f"- Loss: {loss.item():.4f}")
+                print(f"- Sparsity: {(features > 0).float().mean().item():.3f}")
+                print(f"- Active features per sample: {(features > 0).sum(1).float().mean().item():.1f}")
+                print(f"- Reconstruction error: {torch.norm(reconstruction - batch) / torch.norm(batch):.4f}")
+
             optimizer.zero_grad()
             accelerator.backward(loss)
             optimizer.step()
@@ -170,15 +176,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Add all training arguments
     parser.add_argument('--data_path', type=str, default='data/residual_stream_activations_llama1b_bf16.h5')
-    parser.add_argument('--out_dir', type=str, default='out/sae_8k') 
+    parser.add_argument('--out_dir', type=str, default='out/sae_tiny_test') 
     parser.add_argument('--input_size', type=int, default=2048)
-    parser.add_argument('--hidden_size', type=int, default=262144)
+    parser.add_argument('--hidden_size', type=int, default=8192)
     parser.add_argument('--init_scale', type=float, default=0.1)
-    parser.add_argument('--batch_size', type=int, default=512)
-    parser.add_argument('--learning_rate', type=float, default=1e-4)
-    parser.add_argument('--num_epochs', type=int, default=1)
-    parser.add_argument('--lambda_l1', type=float, default=5.0)
-    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--learning_rate', type=float, default=5e-5)
+    parser.add_argument('--num_epochs', type=int, default=100)
+    parser.add_argument('--lambda_l1', type=float, default=0.01)
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--wandb_project', type=str, default='sae-training')
     parser.add_argument('--wandb_name', type=str)
