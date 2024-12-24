@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from pathlib import Path
 import wandb
 from tqdm import tqdm
@@ -98,14 +99,16 @@ def train(
             if idx >=10:
                 break
             reconstruction, features = model(batch)
-            if idx == 1:
-                print(f"Batch {idx}, epoch {epoch}")
             loss = compute_loss(batch, reconstruction, features, lambda_=lambda_l1)
             if idx == 1:
+                print(f"Batch {idx}, epoch {epoch}")
+                print(f"Batch shape: {batch.shape}")
+                print(f"- Raw MSE before normalization: {F.mse_loss(reconstruction, batch).item():.4f}")
+                print(f"- Input norm: {torch.linalg.vector_norm(batch, dim=1).mean().item():.4f}")
+                print(f"- Reconstruction norm: {torch.linalg.vector_norm(reconstruction,dim=1).mean().item():.4f}")
                 print(f"- Loss: {loss.item():.4f}")
-                print(f"- Sparsity: {(features > 0).float().mean().item():.3f}")
-                print(f"- Active features per sample: {(features > 0).sum(1).float().mean().item():.1f}")
-                print(f"- Reconstruction error: {torch.norm(reconstruction - batch) / torch.norm(batch):.4f}")
+                print(f"- Input range: [{batch.min().item():.4f}, {batch.max().item():.4f}]")
+                print(f"- Reconstruction range: [{reconstruction.min().item():.4f}, {reconstruction.max().item():.4f}]")
 
             optimizer.zero_grad()
             accelerator.backward(loss)
@@ -178,12 +181,12 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, default='/home/henry/Documents/PythonProjects/open-concept-steering-dataset/residual_stream_activations_llama1b_bf16.h5')
     parser.add_argument('--out_dir', type=str, default='out/sae_tiny_test') 
     parser.add_argument('--input_size', type=int, default=2048)
-    parser.add_argument('--hidden_size', type=int, default=65536)
-    parser.add_argument('--init_scale', type=float, default=0.1)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--hidden_size', type=int, default=32768)
+    parser.add_argument('--init_scale', type=float, default=1.0)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--learning_rate', type=float, default=5e-5) #"reasonable default" according to anthropic
     parser.add_argument('--num_epochs', type=int, default=100)
-    parser.add_argument('--lambda_l1', type=float, default=0.0001)
+    parser.add_argument('--lambda_l1', type=float, default=0)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--wandb_project', type=str, default='sae-training')
