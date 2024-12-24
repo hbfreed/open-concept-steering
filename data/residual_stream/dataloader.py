@@ -14,7 +14,7 @@ class ResidualStreamDataset(Dataset):
         return len(self.activations)
     
     def __getitem__(self, idx):
-        return torch.from_numpy(self.activations[idx]).view(torch.bfloat16)
+        return torch.from_numpy(self.activations[idx]).view(torch.bfloat16).to(torch.float32) #load from uint16 to bfloat16, then cast to float32 to enable autocast. so yucky. there must be a better way
     
     def __del__(self):
         self.file.close()

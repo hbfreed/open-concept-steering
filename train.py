@@ -65,12 +65,12 @@ def train(
         out_dir.mkdir(parents=True, exist_ok=True)
     
     # Initialize model and move to device
-    model = SAE(input_size, hidden_size, init_scale).to(torch.bfloat16)
+    model = SAE(input_size, hidden_size, init_scale)
     compute_loss = model.compute_loss #when we use accelerate, the model is wrapped in a DDP module, so we need to extract the loss function from the DDP module
     # model = torch.compile(model,mode='max-autotune',fullgraph=True)
     
     # Setup optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0) #anthropic says no weight decay in updates on training saes
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0) #anthropic: no weight decay in updates on training saes, default betas
 
     # Create dataloader
     train_loader = get_dataloader(
