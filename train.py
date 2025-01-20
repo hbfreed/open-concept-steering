@@ -18,7 +18,7 @@ def train(
     hidden_size: int,
     init_scale: float = 0.1,
     # Training params
-    batch_size: int = 512,
+    batch_size: int = 2048,
     learning_rate: float = 1e-3,
     num_epochs: int = 10,
     lambda_l1: float = 5.0,
@@ -67,7 +67,7 @@ def train(
     # Initialize model and move to device
     model = SAE(input_size, hidden_size, init_scale)
     compute_loss = model.compute_loss #when we use accelerate, the model is wrapped in a DDP module, so we need to extract the loss function from the DDP module
-    # model = torch.compile(model,mode='max-autotune',fullgraph=True)
+    model = torch.compile(model,mode='max-autotune',fullgraph=True)
     
     # Setup optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0) #anthropic: no weight decay in updates on training saes, default betas
@@ -89,19 +89,17 @@ def train(
     if accelerator.is_main_process:
         print(f"using {len(train_loader)}*{batch_size}*{accelerator.num_processes}={len(train_loader)*batch_size*accelerator.num_processes} samples for training")
     for epoch in range(num_epochs):
-        progress_bar = tqdm(
-            total=len(train_loader),
-            desc=f'Epoch {epoch+1}/{num_epochs}',
-            disable=not accelerator.is_main_process
-        )
-            
-        for idx,batch in enumerate(train_loader):
-            if idx >=10:
-                break
+        if accelerator.is_main_process:
+            progress_bar = tqdm(total=len(train_loader), 
+                              desc=f"Epoch {epoch}",
+                              position=0,
+                              leave=True)
+        
+        for batch in train_loader:
             reconstruction, features = model(batch)
             loss = compute_loss(batch, reconstruction, features, lambda_=lambda_l1)
-            if idx == 1:
-                print(f"Batch {idx}, epoch {epoch}")
+            if iter_num == 1:
+                print(f"Batch {iter_num}, epoch {epoch}")
                 print(f"Batch shape: {batch.shape}")
                 print(f"- Raw MSE before normalization: {F.mse_loss(reconstruction, batch).item():.4f}")
                 print(f"- Input norm: {torch.linalg.vector_norm(batch, dim=1).mean().item():.4f}")
@@ -133,11 +131,6 @@ def train(
                         "iter": iter_num,
                         "epoch": epoch,
                     })
-                    
-                    progress_bar.set_postfix({
-                        'loss': f'{loss.item():.4f}',
-                        'sparsity': f'{sparsity:.3f}',
-                    })
             
             # Save checkpoint on main process
             if accelerator.is_main_process and iter_num % save_interval == 0:
@@ -156,9 +149,13 @@ def train(
                     save_model(unwrapped_model,metadata=checkpoint, filename=out_dir / 'best_model.safetensors')
             
             iter_num += 1
-            progress_bar.update(1)
             
-        progress_bar.close()
+            if accelerator.is_main_process:
+                progress_bar.update(1)
+        
+        if accelerator.is_main_process:
+            progress_bar.close()
+            print(f"Finished epoch {epoch}")
     
     # Save final model on main process
     if accelerator.is_main_process:
@@ -171,28 +168,43 @@ def train(
         
         wandb.finish()
 
-if __name__ == '__main__':
+if __name__ == '__main__': #should be able to run with accelerate launch train.py config/train_sae_8k.py
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.set_float32_matmul_precision('high')
+    
     import argparse
     parser = argparse.ArgumentParser()
-    # Add all training arguments
-    parser.add_argument('--data_path', type=str, default='/home/henry/Documents/PythonProjects/open-concept-steering-dataset/residual_stream_activations_llama1b_bf16.h5')
-    parser.add_argument('--out_dir', type=str, default='out/sae_tiny_test') 
-    parser.add_argument('--input_size', type=int, default=2048)
-    parser.add_argument('--hidden_size', type=int, default=32768)
-    parser.add_argument('--init_scale', type=float, default=1.0)
-    parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--learning_rate', type=float, default=5e-5) #"reasonable default" according to anthropic
-    parser.add_argument('--num_epochs', type=int, default=100)
-    parser.add_argument('--lambda_l1', type=float, default=0)
-    parser.add_argument('--num_workers', type=int, default=0)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--wandb_project', type=str, default='sae-training')
+    parser.add_argument('config', type=str, help='Path to config file')
+    
+    # Optional override arguments
+    parser.add_argument('--data_path', type=str)
+    parser.add_argument('--out_dir', type=str)
+    parser.add_argument('--input_size', type=int)
+    parser.add_argument('--hidden_size', type=int)
+    parser.add_argument('--init_scale', type=float)
+    parser.add_argument('--batch_size', type=int)
+    parser.add_argument('--learning_rate', type=float)
+    parser.add_argument('--num_epochs', type=int)
+    parser.add_argument('--lambda_l1', type=float)
+    parser.add_argument('--num_workers', type=int)
+    parser.add_argument('--seed', type=int)
+    parser.add_argument('--wandb_project', type=str)
     parser.add_argument('--wandb_name', type=str)
     parser.add_argument('--wandb_entity', type=str)
     
     args = parser.parse_args()
     
-    train(**vars(args))
+    # Load config
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("config", args.config)
+    config_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config_module)
+    config = config_module.config
+    
+    # Override config with any explicitly set command line arguments
+    cmd_line_args = {k: v for k, v in vars(args).items() 
+                    if k != 'config' and v is not None}
+    config.update(cmd_line_args)
+    
+    train(**config)

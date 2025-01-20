@@ -25,7 +25,6 @@ config = {
     'lambda_l1': 5.0,
     
     # System params
-    'device': 'cuda',
     'dtype': torch.bfloat16,
     'num_workers': 24,
     

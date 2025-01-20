@@ -19,15 +19,14 @@ config = {
     'init_scale': 0.1,
     
     # Training params
-    'batch_size': 512,
+    'batch_size': 512, #anthropic thinks even 4096 is below the critical batch size
     'learning_rate': 1e-3,  # Can be decreased if training unstable
     'num_epochs': 1,  # Train on ~8B tokens 
     'lambda_l1': 5.0,
     
     # System params
-    'device': 'cuda',
     'dtype': torch.bfloat16,
-    'num_workers': 24,
+    'num_workers': 8,
     
     # Wandb params
     'wandb_project': 'sae-training',

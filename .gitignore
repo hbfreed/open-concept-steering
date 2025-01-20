@@ -1,0 +1,25 @@
+# Data files
+*.h5
+data/*.h5
+data/**/*.h5
+
+# Common Python ignores
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+
+# Wandb
+wandb/
+
+# Output directories
+out/
+outputs/ 
