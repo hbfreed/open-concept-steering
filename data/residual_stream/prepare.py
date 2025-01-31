@@ -34,7 +34,6 @@ def format_size(num: int) -> str:
 def get_single_gpu_mem():
     return torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
 
-#don't think compiling is worth it here, too annoying to get working, but could do it later
 def load_model(checkpoint: str, device_map="auto") -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -52,7 +51,7 @@ def load_model(checkpoint: str, device_map="auto") -> Tuple[AutoModelForCausalLM
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
     tokenizer.pad_token = tokenizer.eos_token
     model.eval()
-    model = torch.compile(model, mode="reduce-overhead") #don't think compile is worth it here
+    model = torch.compile(model) #don't think compile is worth it here
     return model, tokenizer
 
 
@@ -363,7 +362,7 @@ if __name__ == "__main__":
                       help='Model checkpoint to use')
     parser.add_argument('--output-file', type=str, default="residual_stream_llama1b.h5",
                       help='Output file path (will be saved under data/)')
-    parser.add_argument('--target-vectors', type=int, default=50_000_000,
+    parser.add_argument('--target-vectors', type=int, default=100_000_000,
                       help='Target number of vectors to collect')
     parser.add_argument('--batch-size', type=int, default=132,
                       help='Batch size for processing')
