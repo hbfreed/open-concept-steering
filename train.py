@@ -30,6 +30,12 @@ def calculate_num_chunks_needed(residual_stream, memory_tolerance: float=0.8):
 
     return num_chunks_needed
 
+def normalize_batch(batch): #normalize the batch according to Anthropic's specs
+    target_norm = math.sqrt(batch.shape[1]) #sqrt(input_size)
+    current_norms = torch.norm(batch, dim=1, keepdim=True)
+    mean_norm = current_norms.mean()
+    return batch * (target_norm / mean_norm)
+
 def train(
         data_path: str,
         out_dir: str,
@@ -62,7 +68,7 @@ def train(
     model = SAE(input_size, hidden_size, init_scale).to(device).to(torch.bfloat16) #not using autocast since our data are bfloat16
     model = torch.compile(model, mode='max-autotune',fullgraph=True)
     optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=learning_rate)
-
+    breakpoint
     #Identify which neurons have not fired in any of the previous 12,500 training steps (quoting from towards monosemanticity)
     feature_history_steps = 12500
     feature_check_steps = [25000, 50000, 50000, 75000, 100000]
@@ -101,8 +107,9 @@ def train(
         # Initialize feature history buffer for dead neuron detection
         feature_history = torch.zeros(feature_history_steps, hidden_size, dtype=torch.bool, device=device)
         history_idx = 0
-        
+
         # Forward pass
+        batch = normalize_batch(batch)
         reconstruction, features = model(batch)
         
         # Compute loss using the SAE class method
