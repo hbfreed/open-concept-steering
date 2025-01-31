@@ -2,17 +2,17 @@ import torch
 from transformers import PreTrainedModel
 
 class ResidualStreamCollector:
-    """Collect the residual stream activations from a model."""
+    """Collect the residual stream from a model."""
     def __init__(self, model: PreTrainedModel, layer_idx: int):
         self.model = model
         self.layer_idx = layer_idx
-        self.activations = None  # Changed from list to single tensor
+        self.residual_stream = None  # Changed from list to single tensor
         self.hook_handle = None
 
     def _hook(self, module, input, output):
-        """Hook function to capture residual stream activations."""
+        """Hook function to capture residual stream."""
         # Store directly as tensor instead of appending to list
-        self.activations = input[0].detach()
+        self.residual_stream = input[0].detach()
 
     def attach_hook(self):
         """Attach hook to the specified layer."""
@@ -29,12 +29,12 @@ class ResidualStreamCollector:
             self.hook_handle.remove()
             self.hook_handle = None
 
-    def clear_activations(self):
-        """Clear the collected activations."""
-        self.activations = None
+    def clear_residual_stream(self):
+        """Clear the collected residual stream."""
+        self.residual_stream = None
 
-    def get_activations(self) -> torch.Tensor:
-        """Get the collected activations."""
-        if self.activations is None:
-            raise ValueError("No activations collected.")
-        return self.activations
+    def get_residual_stream(self) -> torch.Tensor:
+        """Get the collected residual stream."""
+        if self.residual_stream is None:
+            raise ValueError("No residual stream collected.")
+        return self.residual_stream

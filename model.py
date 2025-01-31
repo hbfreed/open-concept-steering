@@ -10,22 +10,19 @@ class SAE(nn.Module):
         self.encode = nn.Linear(input_size, hidden_size, bias=True)
         self.decode = nn.Linear(hidden_size, input_size, bias=True)
                 
-        #initializing weights not working for now, so commented out
-        # with torch.no_grad():
-        #     # Initialize decoder weights
-        #     decoder_weights = torch.randn(hidden_size, input_size)
-        #     decoder_weights = decoder_weights.T
-        #     decoder_weights = init_scale * decoder_weights / torch.linalg.vector_norm(decoder_weights, dim=0, keepdim=True)
+        with torch.no_grad():
+            # Random directions
+            decoder_weights = torch.randn(input_size, hidden_size) 
+            # Normalize columns
+            decoder_weights = decoder_weights / torch.linalg.vector_norm(decoder_weights, dim=0, keepdim=True)
+            # Scale by random values between 0.05 and 1.0
+            scales = torch.rand(hidden_size) * 0.95 + 0.05
+            decoder_weights = decoder_weights * scales
             
-        #     self.decode.weight.data = decoder_weights
-        #     self.encode.weight.data = decoder_weights.T
-        #     self.encode.bias.data.zero_()
-        #     self.decode.bias.data.zero_()
-            
-        #     # Assert that all column norms are approximately init_scale
-        #     column_norms = torch.linalg.vector_norm(self.decode.weight.data, dim=0)
-        #     assert torch.allclose(column_norms, torch.full_like(column_norms, init_scale), rtol=1e-5), \
-        #         f"Column norms should be {init_scale}, but got norms ranging from {column_norms.min().item()} to {column_norms.max().item()}"
+            self.decode.weight.data = decoder_weights
+            self.encode.weight.data = decoder_weights.T
+            self.encode.bias.data.zero_()
+            self.decode.bias.data.zero_()
     
     def forward(self, x):
         features = self.encode(x)

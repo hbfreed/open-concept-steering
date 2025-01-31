@@ -1,178 +1,166 @@
+import os
+import importlib.util
+import math
+import numpy as np
+import psutil
 import torch
 import torch.nn.functional as F
-from pathlib import Path
+import h5py
 import wandb
+import bitsandbytes as bnb
 from tqdm import tqdm
-from model import SAE
-from data.residual_stream.dataloader import get_dataloader
-from accelerate import Accelerator
-from accelerate.utils import set_seed
+from pathlib import Path
 from safetensors.torch import save_model
+from model import SAE
+
+def load_dataset_chunk(residual_stream: h5py.Dataset, chunk_number: int, num_chunks_needed: int):
+    total_size = len(residual_stream)
+    chunk_size = math.ceil(total_size / num_chunks_needed)
+    start = chunk_number * chunk_size
+    end = min(start + chunk_size, total_size)
+        
+    return torch.from_numpy(residual_stream[start:end]).view(torch.bfloat16)
+
+def calculate_num_chunks_needed(residual_stream, memory_tolerance: float=0.8):
+    total_vectors, vector_size  = residual_stream.shape[0], residual_stream.shape[1]
+    bytes_per_value = 2 #vectors are saved as bfloat16
+    total_dataset_size = (total_vectors * vector_size * bytes_per_value) / (1024**3)
+    total_system_memory = psutil.virtual_memory().total / (1024**3) 
+    num_chunks_needed = math.ceil(total_dataset_size / (total_system_memory*memory_tolerance))
+
+    return num_chunks_needed
 
 def train(
-    # Data params
-    data_path: str,
-    out_dir: str,
-    # Architecture params  
-    input_size: int,
-    hidden_size: int,
-    init_scale: float = 0.1,
-    # Training params
-    batch_size: int = 2048,
-    learning_rate: float = 1e-3,
-    num_epochs: int = 10,
-    lambda_l1: float = 5.0,
-    # System params
-    dtype: torch.dtype = torch.bfloat16,
-    num_workers: int = 4,
-    log_interval: int = 100,
-    eval_interval: int = 1000,
-    save_interval: int = 10000,
-    seed: int = 42,
-    # Wandb params
-    wandb_project: str = "sae-training",
-    wandb_name: str = None,
-    wandb_entity: str = None,
-):
-    """Train Sparse Autoencoder with DDP."""
-    
-    # Initialize accelerator
-    accelerator = Accelerator(mixed_precision='bf16') #used mixed precision training with accelerate
-    
-    # Set seeds for reproducibility
-    set_seed(seed)
-    
-    # Only initialize wandb on main process
-    if accelerator.is_main_process:
-        wandb.init(
+        data_path: str,
+        out_dir: str,
+        input_size: int,
+        hidden_size: int,
+        init_scale: float = 0.1,
+        batch_size: int = 2048,
+        learning_rate: float = 5e-5,
+        num_epochs: int = 1,
+        lambda_l1: float = 5.0,
+        lambda_ramp_frac: float = 0.05,
+        lr_decay_frac: float = 0.2,
+        seed: int = 42,
+        wandb_project: str = "sae-training",
+        wandb_name: str = None,
+        wandb_entity: str = None,
+        ):
+    device = f'cuda'
+
+    torch.manual_seed(seed)
+    wandb.init(
             project=wandb_project,
             name=wandb_name,
             entity=wandb_entity,
-            config={
-                "input_size": input_size,
-                "hidden_size": hidden_size,
-                "init_scale": init_scale,
-                "batch_size": batch_size,
-                "learning_rate": learning_rate,
-                "num_epochs": num_epochs,
-                "lambda_l1": lambda_l1,
-            }
-        )
-    
-    # Create output directory on main process
-    if accelerator.is_main_process:
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize model and move to device
-    model = SAE(input_size, hidden_size, init_scale)
-    compute_loss = model.compute_loss #when we use accelerate, the model is wrapped in a DDP module, so we need to extract the loss function from the DDP module
-    model = torch.compile(model,mode='max-autotune',fullgraph=True)
-    
-    # Setup optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0) #anthropic: no weight decay in updates on training saes, default betas
+            config=locals()
+            )
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create dataloader
-    train_loader = get_dataloader(
-        data_path,
-        batch_size=batch_size,
-        num_workers=num_workers
-    )
-    
-    # Prepare for distributed training
-    model, optimizer, train_loader = accelerator.prepare(
-        model, optimizer, train_loader
-    )
-    # Training loop
-    iter_num = 0
+    model = SAE(input_size, hidden_size, init_scale).to(device).to(torch.bfloat16) #not using autocast since our data are bfloat16
+    model = torch.compile(model, mode='max-autotune',fullgraph=True)
+    optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=learning_rate)
+
+    #Identify which neurons have not fired in any of the previous 12,500 training steps (quoting from towards monosemanticity)
+    feature_history_steps = 12500
+    feature_check_steps = [25000, 50000, 50000, 75000, 100000]
+
+    f = h5py.File(data_path, 'r')
+    residual_stream = f['residual_stream']
+
+    num_steps = int(np.ceil(len(residual_stream)/ batch_size))
+    lambda_ramp_steps = int(num_steps * lambda_ramp_frac) #how many steps to take to ramp lambda to full value
+    lr_decay_start = int(num_steps * (1 - lr_decay_frac)) #how many steps in where we ramp lr down to 0
+
+
+    #for now, just load a chunk of the dataset into memory. quick and dirty.
+    num_chunks_needed = calculate_num_chunks_needed(residual_stream)
+    steps_per_chunk = num_steps // num_chunks_needed
     best_loss = float('inf')
-    if accelerator.is_main_process:
-        print(f"using {len(train_loader)}*{batch_size}*{accelerator.num_processes}={len(train_loader)*batch_size*accelerator.num_processes} samples for training")
-    for epoch in range(num_epochs):
-        if accelerator.is_main_process:
-            progress_bar = tqdm(total=len(train_loader), 
-                              desc=f"Epoch {epoch}",
-                              position=0,
-                              leave=True)
-        
-        for batch in train_loader:
-            reconstruction, features = model(batch)
-            loss = compute_loss(batch, reconstruction, features, lambda_=lambda_l1)
-            if iter_num == 1:
-                print(f"Batch {iter_num}, epoch {epoch}")
-                print(f"Batch shape: {batch.shape}")
-                print(f"- Raw MSE before normalization: {F.mse_loss(reconstruction, batch).item():.4f}")
-                print(f"- Input norm: {torch.linalg.vector_norm(batch, dim=1).mean().item():.4f}")
-                print(f"- Reconstruction norm: {torch.linalg.vector_norm(reconstruction,dim=1).mean().item():.4f}")
-                print(f"- Loss: {loss.item():.4f}")
-                print(f"- Input range: [{batch.min().item():.4f}, {batch.max().item():.4f}]")
-                print(f"- Reconstruction range: [{reconstruction.min().item():.4f}, {reconstruction.max().item():.4f}]")
-
-            optimizer.zero_grad()
-            accelerator.backward(loss)
-            optimizer.step()
-            
-            # Logging
-            if iter_num % log_interval == 0:
-                # Calculate sparsity metrics
-                with torch.no_grad():
-                    nonzero = features > 0
-                    sparsity = nonzero.float().mean().item()
-                    active_features = nonzero.sum(0).float().mean().item()
-                    dead_features = (nonzero.sum(0) == 0).float().mean().item()
-                
-                # Only log on main process
-                if accelerator.is_main_process:
-                    wandb.log({
-                        "loss": loss.item(),
-                        "sparsity": sparsity,
-                        "active_features_per_sample": active_features,
-                        "dead_features_fraction": dead_features,
-                        "iter": iter_num,
-                        "epoch": epoch,
-                    })
-            
-            # Save checkpoint on main process
-            if accelerator.is_main_process and iter_num % save_interval == 0:
-                # Unwrap model before saving
-                unwrapped_model = accelerator.unwrap_model(model)
-                checkpoint = {
-                    'iter_num': str(iter_num),
-                    'epoch': str(epoch),
-                    'config': str(wandb.config if accelerator.is_main_process else None)
-                }
-                save_model(unwrapped_model,metadata=checkpoint, filename=out_dir / f'checkpoint_{iter_num:07d}.safetensors')
-                
-                # Save best model
-                if loss.item() < best_loss:
-                    best_loss = loss.item()
-                    save_model(unwrapped_model,metadata=checkpoint, filename=out_dir / 'best_model.safetensors')
-            
-            iter_num += 1
-            
-            if accelerator.is_main_process:
-                progress_bar.update(1)
-        
-        if accelerator.is_main_process:
-            progress_bar.close()
-            print(f"Finished epoch {epoch}")
     
-    # Save final model on main process
-    if accelerator.is_main_process:
-        unwrapped_model = accelerator.unwrap_model(model)
-        save_model(unwrapped_model,medatada={
-            'iter_num': str(iter_num),
-            'epoch': str(epoch),
-            'config': str(wandb.config if accelerator.is_main_process else None)
-        }, filename=out_dir / 'final_model.safetensors')
-        
-        wandb.finish()
+    for step in tqdm(range(num_steps)):
+        current_chunk = step // steps_per_chunk
 
-if __name__ == '__main__': #should be able to run with accelerate launch train.py config/train_sae_8k.py
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.set_float32_matmul_precision('high')
-    
+        if step % steps_per_chunk == 0:
+            if step > 0:
+                del vectors
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            vectors = load_dataset_chunk(residual_stream, current_chunk, num_chunks_needed)
+
+        
+        local_step = step % steps_per_chunk
+        start_idx = local_step * batch_size
+        end_idx = min(start_idx + batch_size, len(vectors))
+        batch = vectors[start_idx:end_idx].to(device)
+        current_lambda = min(lambda_l1 * (step  / lambda_ramp_steps), lambda_l1) if lambda_ramp_steps > 0 else lambda_l1
+
+        #forward pass
+        # Initialize feature history buffer for dead neuron detection
+        feature_history = torch.zeros(feature_history_steps, hidden_size, dtype=torch.bool, device=device)
+        history_idx = 0
+        
+        # Forward pass
+        reconstruction, features = model(batch)
+        
+        # Compute loss using the SAE class method
+        loss = model.compute_loss(batch, reconstruction, features, lambda_=current_lambda)
+        
+        # Backward pass
+        loss.backward()
+        
+        # Gradient clipping to 1.0
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        
+        # Learning rate decay in last 20% of training
+        if step > lr_decay_start:
+            current_lr = learning_rate * (1 - (step - lr_decay_start) / (num_steps - lr_decay_start))
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
+        
+        # Optimizer step and zero gradients
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        
+        # Update feature history buffer
+        feature_history[history_idx] = (features.abs().sum(0) > 0)  # Record which features were active
+        history_idx = (history_idx + 1) % feature_history_steps
+        
+        # Logging
+        if step % 100 == 0:
+            # Compute losses and metrics
+            with torch.no_grad():
+                mse_loss = F.mse_loss(reconstruction, batch)
+                decoder_norms = model.get_decoder_norms()
+                l1_loss = torch.sum(torch.abs(features) * decoder_norms[None, :]) / (batch.shape[0] * features.shape[1])
+                
+                # Calculate feature metrics
+                # A feature is considered dead if it hasn't activated in the history window
+                dead_features = (~feature_history.any(dim=0)).sum().item()
+                l0_norm = (features != 0).float().sum().item()
+            
+            wandb.log({
+                'step': step,
+                'loss': loss.item(),
+                'mse_loss': mse_loss.item(),
+                'l1_loss': l1_loss.item(),
+                'lambda': current_lambda,
+                'lr': optimizer.param_groups[0]['lr'],
+                'dead_features': dead_features,
+                'dead_features_pct': dead_features / features.shape[1] * 100,
+                'l0_norm': l0_norm / batch.shape[0],
+                'l0_norm_pct': l0_norm / (batch.shape[0] * features.shape[1]) * 100
+            })
+            
+        # Save best model
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            save_model(model.to('cpu'), str(out_dir / 'best_model.safetensors'))
+            model.to(device)
+            
+if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('config', type=str, help='Path to config file')
@@ -187,24 +175,23 @@ if __name__ == '__main__': #should be able to run with accelerate launch train.p
     parser.add_argument('--learning_rate', type=float)
     parser.add_argument('--num_epochs', type=int)
     parser.add_argument('--lambda_l1', type=float)
-    parser.add_argument('--num_workers', type=int)
+    parser.add_argument('--lambda_ramp_frac', type=float)
+    parser.add_argument('--lr_decay_frac', type=float)
     parser.add_argument('--seed', type=int)
     parser.add_argument('--wandb_project', type=str)
     parser.add_argument('--wandb_name', type=str)
     parser.add_argument('--wandb_entity', type=str)
-    
+
     args = parser.parse_args()
-    
-    # Load config
-    import importlib.util
+
     spec = importlib.util.spec_from_file_location("config", args.config)
     config_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config_module)
     config = config_module.config
-    
-    # Override config with any explicitly set command line arguments
-    cmd_line_args = {k: v for k, v in vars(args).items() 
+
+    #override the config if an override argument is added
+    cmd_line_args = {k: v for k, v in vars(args).items()
                     if k != 'config' and v is not None}
     config.update(cmd_line_args)
-    
+
     train(**config)
