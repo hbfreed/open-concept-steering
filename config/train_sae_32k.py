@@ -1,6 +1,6 @@
 config = {
     # Data params
-    'data_path': 'data/residual_stream_activations_llama1b_bf16.h5',
+    'data_path': 'data/residual_stream_llama1b.h5',
     'out_dir': 'out/sae_32k',
     
     # Architecture params

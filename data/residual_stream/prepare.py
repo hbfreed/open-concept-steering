@@ -56,7 +56,7 @@ def load_model(checkpoint: str, device_map="auto") -> Tuple[AutoModelForCausalLM
     return model, tokenizer
 
 
-def collect_batch_activations(
+def collect_batch_residual_stream(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     texts: List[str],
@@ -82,11 +82,11 @@ def collect_batch_activations(
         torch.cuda.empty_cache()
         model(**inputs)
 
-    activations = collector.get_activations()
-    activations = activations.cpu()
+    residual_stream = collector.get_residual_stream()
+    residual_stream = residual_stream.cpu()
     
     collector.remove_hook()
-    collector.clear_activations()
+    collector.clear_residual_stream()
 
     metadata = {
         'texts': texts,
@@ -95,7 +95,7 @@ def collect_batch_activations(
         'sampled_positions': []  # Add this to track positions for each text
     }
 
-    return activations, metadata
+    return residual_stream, metadata
 
 def create_dataset(
     dataset_name: str,
@@ -138,8 +138,8 @@ def create_dataset(
     rank_output_file = f"{output_file[:-3]}_rank{distributed_state.process_index}.h5"
     
     with h5py.File(rank_output_file, 'w') as f:
-        activations_dset = f.create_dataset(
-            'activations',
+        residual_stream_dset = f.create_dataset(
+            'residual_stream',
             shape=(0, hidden_size),
             maxshape=(None, hidden_size),
             dtype='uint16',
@@ -183,12 +183,12 @@ def create_dataset(
             
             if len(texts_buffer) == batch_size:
                 with distributed_state.split_between_processes(texts_buffer) as split_texts:
-                    activations, batch_metadata = collect_batch_activations(
+                    residual_stream, batch_metadata = collect_batch_residual_stream(
                         model, tokenizer, split_texts, middle_layer,
                         max_length=max_length
                     )
                     
-                    batch_size, seq_len, _ = activations.shape
+                    batch_size, seq_len, _ = residual_stream.shape
                     vectors_this_batch = 0
                     
                     # Extend text_refs dataset
@@ -208,15 +208,15 @@ def create_dataset(
                         else:
                             sampled_positions = valid_positions
                         
-                        vectors = activations[b, sampled_positions].to(torch.bfloat16).view(torch.uint16).cpu().numpy()
+                        vectors = residual_stream[b, sampled_positions].to(torch.bfloat16).view(torch.uint16).cpu().numpy()
                         valid_vectors = vectors[~np.isnan(vectors).any(axis=1)]
                         vectors_this_batch += len(valid_vectors)
                         
                         if len(valid_vectors) > 0:
-                            current_size = activations_dset.shape[0]
+                            current_size = residual_stream_dset.shape[0]
                             new_size = current_size + len(valid_vectors)
-                            activations_dset.resize((new_size, hidden_size))
-                            activations_dset[current_size:new_size] = valid_vectors
+                            residual_stream_dset.resize((new_size, hidden_size))
+                            residual_stream_dset[current_size:new_size] = valid_vectors
                             
                             # Track which text these vectors came from
                             text_indices_dset.resize((new_size,))
@@ -274,8 +274,8 @@ def consolidate_rank_files(base_output_file: str, num_ranks: int, chunk_size: in
     try:
         # Open first file to get metadata and shapes
         with h5py.File(rank_files[0], 'r') as f0:
-            hidden_size = f0['activations'].shape[1]
-            total_vectors = sum(h5py.File(f, 'r')['activations'].shape[0] for f in rank_files)
+            hidden_size = f0['residual_stream'].shape[1]
+            total_vectors = sum(h5py.File(f, 'r')['residual_stream'].shape[0] for f in rank_files)
             total_texts = sum(h5py.File(f, 'r')['text_refs'].shape[0] for f in rank_files)
             
             # Create consolidated file
@@ -285,7 +285,7 @@ def consolidate_rank_files(base_output_file: str, num_ranks: int, chunk_size: in
                 
                 # Create consolidated datasets
                 dset_out = f_out.create_dataset(
-                    'activations',
+                    'residual_stream',
                     shape=(total_vectors, hidden_size),
                     dtype='uint16',
                     chunks=True
@@ -308,15 +308,15 @@ def consolidate_rank_files(base_output_file: str, num_ranks: int, chunk_size: in
                 
                 for rank_file in tqdm(rank_files, desc="Consolidating rank files"):
                     with h5py.File(rank_file, 'r') as f_rank:
-                        # Copy activations
-                        dset_rank = f_rank['activations']
+                        # Copy residual_stream
+                        dset_rank = f_rank['residual_stream']
                         rank_vectors = dset_rank.shape[0]
                         
                         # Copy text references and indices
                         text_refs_rank = f_rank['text_refs']
                         text_indices_rank = f_rank['text_indices']
                         
-                        # Process activations in chunks
+                        # Process stream in chunks
                         for i in range(0, rank_vectors, chunk_size):
                             end_idx = min(i + chunk_size, rank_vectors)
                             chunk = dset_rank[i:end_idx]
@@ -356,7 +356,7 @@ if __name__ == "__main__":
     profiler.enable()
     
     start_time = time.time()
-    parser = argparse.ArgumentParser(description='Collect residual stream activations from a language model')
+    parser = argparse.ArgumentParser(description='Collect residual stream from a language model')
     parser.add_argument('--dataset-name', type=str, default="HuggingFaceFW/fineweb",
                       help='Name of the dataset to use')
     parser.add_argument('--model-checkpoint', type=str, default="meta-llama/Llama-3.2-1B-Instruct",
