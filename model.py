@@ -23,9 +23,6 @@ class SAE(nn.Module):
             self.encode.weight.data = decoder_weights.T.contiguous()
             self.encode.bias.data.zero_()
             self.decode.bias.data.zero_()
-
-            norms = torch.linalg.vector_norm(self.decode.weight, dim=0)
-            print(f"Decoder norms min: {norms.min():.3f}, max: {norms.max():.3f}")
     
     def forward(self, x):
         features = self.encode(x)

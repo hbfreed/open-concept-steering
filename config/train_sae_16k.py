@@ -12,10 +12,10 @@ config = {
     'batch_size': 4096,  # Smaller batch size due to memory
     'learning_rate': 5e-5,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
-    'lambda_l1': 5.0,
+    'lambda_l1': 6.0,
     
     # Wandb params
     'wandb_project': 'sae-training',
-    'wandb_name': 'sae_16k_initialized',
+    'wandb_name': 'sae_16k_initialized_normalized',
     'wandb_entity': "hbfreed",  # Add your wandb entity here
 }

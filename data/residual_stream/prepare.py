@@ -34,13 +34,16 @@ def format_size(num: int) -> str:
 def get_single_gpu_mem():
     return torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
 
-def load_model(checkpoint: str, device_map="auto") -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
+def load_model(checkpoint: str, layer_idx: int, device_map: str ="auto") -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True
-    )
+)
+
+    config = AutoConfig.from_pretrained(checkpoint)
+    config.num_hidden_layers = layer_idx + 1 # Only load up to the middle layer, since that's all we need
 
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint,
@@ -111,8 +114,11 @@ def create_dataset(
     
     target_vectors = target_vectors // distributed_state.num_processes
     batch_size = batch_size * distributed_state.num_processes
+
+    config = AutoConfig.from_pretrained(model_checkpoint)
+    middle_layer = config.num_hidden_layers // 2
     
-    model, tokenizer = load_model(model_checkpoint, device_map=distributed_state.device)
+    model, tokenizer = load_model(model_checkpoint, layer_idx=middle_layer ,device_map=distributed_state.device)
     dataset = load_dataset(
         dataset_name,
         split="train", 
@@ -358,9 +364,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Collect residual stream from a language model')
     parser.add_argument('--dataset-name', type=str, default="HuggingFaceFW/fineweb",
                       help='Name of the dataset to use')
-    parser.add_argument('--model-checkpoint', type=str, default="meta-llama/Llama-3.2-1B-Instruct",
+    parser.add_argument('--model-checkpoint', type=str, default="allenai/OLMo-2-1124-7B-Instruct",
                       help='Model checkpoint to use')
-    parser.add_argument('--output-file', type=str, default="residual_stream_llama1b.h5",
+    parser.add_argument('--output-file', type=str, default="olmo2_7b_residual_stream.h5",
                       help='Output file path (will be saved under data/)')
     parser.add_argument('--target-vectors', type=int, default=100_000_000,
                       help='Target number of vectors to collect')
