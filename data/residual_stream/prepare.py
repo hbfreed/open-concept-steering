@@ -47,6 +47,7 @@ def load_model(checkpoint: str, layer_idx: int, device_map: str ="auto") -> Tupl
 
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint,
+        config=config,
         device_map=device_map,
         attn_implementation="flash_attention_2",
         torch_dtype=torch.bfloat16,
