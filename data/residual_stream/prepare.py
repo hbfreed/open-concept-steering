@@ -1,18 +1,21 @@
 import torch
 import h5py
-import numpy as np
 from tqdm import tqdm
 import time
 import argparse
 import os
+from psutil import cpu_count
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, BitsAndBytesConfig
 from accelerate import PartialState
 from datasets import load_dataset
 from datetime import datetime
 from utils.activation_hooks import ResidualStreamCollector
+from transformers.utils import logging
 
+logging.set_verbosity_error() #suppress warnings because we are using half the model
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
-os.environ["NCCL_TIMEOUT"] = "1800"  # Set 30 minute timeout
+os.environ["NCCL_TIMEOUT"] = "2000"  # Set 30 minute timeout
 
 def load_model(checkpoint: str, layer_idx: int, device_map: str = "auto"):
     config = AutoConfig.from_pretrained(checkpoint)
@@ -44,15 +47,15 @@ def collect_batch_residual_stream(model, tokenizer, texts, layer_idx, max_length
 
     # Tokenize and get actual processed text
     inputs = tokenizer(
-        texts,
+        texts, 
         return_tensors="pt",
-        padding=True,
+        padding=True, 
         truncation=True,
         max_length=max_length
     )
+    # Get the actual text that went through the model
     truncated_texts = tokenizer.batch_decode(inputs['input_ids'], skip_special_tokens=True)
     
-    # Move to device and process
     device = model.device
     inputs = {k: v.to(device, non_blocking=True) for k, v in inputs.items()}
     
@@ -60,7 +63,13 @@ def collect_batch_residual_stream(model, tokenizer, texts, layer_idx, max_length
         torch.cuda.empty_cache()
         model(**inputs)
 
+    # Get residual stream and reshape to (batch_size * seq_length, hidden_size)
     residual_stream = collector.get_residual_stream().cpu()
+    batch_size, seq_length, hidden_size = residual_stream.shape
+    residual_stream = residual_stream.reshape(-1, hidden_size)
+    
+    # Repeat each text seq_length times since we're saving per-token residual streams
+    truncated_texts = [text for text in truncated_texts for _ in range(seq_length)]
     
     collector.remove_hook()
     collector.clear_residual_stream()
@@ -71,7 +80,7 @@ def create_dataset(
     dataset_name: str,
     model_checkpoint: str,
     output_file: str,
-    target_vectors: int = 50_000_000,
+    target_vectors: int = 100_000_000,
     batch_size: int = 32,
     max_length: int = 512,
 ):
@@ -87,7 +96,13 @@ def create_dataset(
     model, tokenizer = load_model(model_checkpoint, layer_idx=middle_layer, device_map=distributed_state.device)
     
     # Load dataset
-    dataset = load_dataset(dataset_name, split="train", streaming=False)
+    dataset = load_dataset(
+    dataset_name,
+    split="train", 
+    num_proc=cpu_count(),  # Use all available CPU cores for loading
+    streaming=False,  # Disable streaming to load into memory
+    name="sample-10BT",
+)
     hidden_size = model.config.hidden_size
 
     # Setup output file
@@ -199,48 +214,59 @@ def consolidate_files(base_output_file: str, num_ranks: int):
                 os.remove(rank_file)  # Clean up rank file
 
 if __name__ == "__main__":
-    start_time = time.time()
-    parser = argparse.ArgumentParser(description='Collect residual stream from a language model')
-    parser.add_argument('--dataset-name', type=str, default="HuggingFaceFW/fineweb",
-                      help='Name of the dataset to use')
-    parser.add_argument('--model-checkpoint', type=str, default="allenai/OLMo-2-1124-7B-Instruct",
-                      help='Model checkpoint to use')
-    parser.add_argument('--output-file', type=str, default="olmo2_7b_residual_stream.h5",
-                      help='Output file path')
-    parser.add_argument('--target-vectors', type=int, default=50_000_000,
-                      help='Target number of vectors to collect')
-    parser.add_argument('--batch-size', type=int, default=64,
-                      help='Batch size for processing')
-    parser.add_argument('--max-length', type=int, default=512,
-                      help='Maximum sequence length')
-    
-    args = parser.parse_args()
-    
-    # Enable optimizations
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.set_float32_matmul_precision('high')
-    
-    # Initialize distributed state
-    distributed_state = PartialState()
-    
-    create_dataset(
-        dataset_name=args.dataset_name,
-        model_checkpoint=args.model_checkpoint,
-        output_file=args.output_file,
-        target_vectors=args.target_vectors,
-        batch_size=args.batch_size,
-        max_length=args.max_length,
-    )
-    
-    # Ensure all processes have finished
-    torch.distributed.barrier()
-    
-    # Consolidate files in main process
-    if distributed_state.is_main_process:
-        time.sleep(1)  # Small delay to ensure files are closed
-        consolidate_files(args.output_file, distributed_state.num_processes)
+    import cProfile, pstats, io
+
+    def main():
+        start_time = time.time()
+        parser = argparse.ArgumentParser(description='Collect residual stream from a language model')
+        parser.add_argument('--dataset-name', type=str, default="HuggingFaceFW/fineweb",
+                          help='Name of the dataset to use')
+        parser.add_argument('--model-checkpoint', type=str, default="allenai/OLMo-2-1124-7B-Instruct",
+                          help='Model checkpoint to use')
+        parser.add_argument('--output-file', type=str, default="olmo2_7b_residual_stream",
+                          help='Output file path')
+        parser.add_argument('--target-vectors', type=int, default=100_000_000,
+                          help='Target number of vectors to collect')
+        parser.add_argument('--batch-size', type=int, default=128,
+                          help='Batch size for processing')
+        parser.add_argument('--max-length', type=int, default=512,
+                          help='Maximum sequence length')
         
-    end_time = time.time()
-    if distributed_state.is_main_process:
-        print(f"Total time taken: {end_time - start_time:.2f} seconds")
+        args = parser.parse_args()
+        
+        # Enable optimizations
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.set_float32_matmul_precision('high')
+        
+        # Initialize distributed state
+        distributed_state = PartialState()
+        
+        create_dataset(
+            dataset_name=args.dataset_name,
+            model_checkpoint=args.model_checkpoint,
+            output_file=args.output_file,
+            target_vectors=args.target_vectors,
+            batch_size=args.batch_size,
+            max_length=args.max_length,
+        )
+        
+        # Ensure all processes have finished
+        torch.distributed.barrier()
+            
+        end_time = time.time()
+        if distributed_state.is_main_process:
+            print(f"Total time taken: {end_time - start_time:.2f} seconds")
+    
+    # Set up the profiler
+    pr = cProfile.Profile()
+    pr.enable()
+    
+    main()
+    
+    pr.disable()
+    s = io.StringIO()
+    sortby = 'cumulative'
+    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+    with open("profile_stats.txt", "w") as f:
+       ps.dump_stats("profile_stats.txt") 

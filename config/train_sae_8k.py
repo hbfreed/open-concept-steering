@@ -1,6 +1,6 @@
 config = {
     # Data params
-    'data_path': 'data/residual_stream_llama1b.h5',
+    'data_path': 'data/llama32_1b_residual_stream_rank0.h5',
     'out_dir': 'out/sae_8k',
     
     # Architecture params

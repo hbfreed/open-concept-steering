@@ -23,15 +23,15 @@ def setup_distributed():
 def load_dataset_chunk(residual_stream: h5py.Dataset, chunk_number: int, num_chunks_needed: int):
     total_size = len(residual_stream)
     chunk_size = math.ceil(total_size / num_chunks_needed)
-
+    start = chunk_number * chunk_size
+    end = min(start + chunk_size, total_size)
     if dist.get_rank() == 0:
-        start = chunk_number * chunk_size
-        end = min(start + chunk_size, total_size)
+        # Only rank 0 loads the full chunk into CPU memory (to avoid GPU OOM)
         vectors = torch.from_numpy(residual_stream[start:end]).view(torch.bfloat16)
+        return vectors
     else:
-        # Other ranks just need to know the size
-        vectors = torch.empty(chunk_size, residual_stream.shape[1], dtype=torch.bfloat16)
-    return vectors
+        # Non‑rank‑0 processes do not load the huge chunk.
+        return None
 
 def calculate_num_chunks_needed(residual_stream, memory_tolerance: float=0.8):
     total_vectors, vector_size  = residual_stream.shape[0], residual_stream.shape[1]
@@ -80,7 +80,7 @@ def train(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = SAE(input_size, hidden_size, init_scale).to(device).to(torch.bfloat16) #not using autocast since our data are bfloat16
-    model = torch.compile(model, mode='max-autotune',fullgraph=True)
+    # model = torch.compile(model, mode='max-autotune',fullgraph=True)
     model = DDP(model, device_ids=[int(os.environ["LOCAL_RANK"])])
     optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=learning_rate)
     
@@ -119,9 +119,38 @@ def train(
 
         local_step = step % steps_per_chunk
         rank = dist.get_rank()
-        start_idx = local_step * (batch_size * dist.get_world_size()) + (rank * batch_size)
-        end_idx = min(start_idx + batch_size, len(vectors))
-        batch = vectors[start_idx:end_idx].cuda(dist.get_rank())
+
+        # Determine the overall boundaries for the current chunk
+        total_dataset_size = len(residual_stream)
+        chunk_size_value = math.ceil(total_dataset_size / num_chunks_needed)
+        start_global = (step // steps_per_chunk) * chunk_size_value
+        end_global = min(start_global + chunk_size_value, total_dataset_size)
+        chunk_length = end_global - start_global
+
+        # Compute indices for the full distributed mini-batch for this step.
+        # We take a contiguous block of size (batch_size * world_size) from the current chunk.
+        global_batch_start = local_step * (batch_size * dist.get_world_size())
+        global_batch_end = global_batch_start + (batch_size * dist.get_world_size())
+
+        # If there isn't a full distributed batch available (e.g. at the end), skip this step.
+        if global_batch_end > chunk_length:
+            continue
+
+        # On rank 0, extract the full mini-batch slice from the CPU-loaded chunk
+        if rank == 0:
+            full_mini_batch_cpu = vectors[global_batch_start: global_batch_end]
+            full_mini_batch = full_mini_batch_cpu.cuda(rank)
+            # Split the full mini-batch equally into a list (one per rank)
+            scatter_list = list(full_mini_batch.chunk(dist.get_world_size(), dim=0))
+        else:
+            scatter_list = None
+
+        # Allocate space on every rank for its mini-batch slice.
+        vector_size = residual_stream.shape[1]
+        batch = torch.empty((batch_size, vector_size), dtype=torch.bfloat16, device=torch.device("cuda", rank))
+
+        # Scatter the full mini-batch slices from rank 0 to all ranks.
+        dist.scatter(batch, scatter_list, src=0)
 
         current_lambda = min(lambda_l1 * (step  / lambda_ramp_steps), lambda_l1) if lambda_ramp_steps > 0 else lambda_l1
 
@@ -189,7 +218,7 @@ def train(
             
 if __name__ == '__main__':
     setup_distributed()
-
+    # run with torchrun --nproc_per_node=num_gpus train.py config.py
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('config', type=str, help='Path to config file')
