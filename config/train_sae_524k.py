@@ -1,15 +1,15 @@
 config = {
     # Data params
-    'data_path': 'data/residual_stream_llama1b.h5',
+    'data_path': 'data/olmo2_7b_residual_stream.h5',
     'out_dir': 'out/sae_524k',
     
     # Architecture params
-    'input_size': 2048,  # Llama 1B hidden size
+    'input_size': 4096,  # OLMo2 7B hidden size
     'hidden_size': 524_288,  # 524K features
     'init_scale': 0.1,
     
     # Training params
-    'batch_size': 256,  # Smaller batch size due to memory
+    'batch_size': 512,  # Smaller batch size due to memory
     'learning_rate': 5e-5,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
     'lambda_l1': 5.0,

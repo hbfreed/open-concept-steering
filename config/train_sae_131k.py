@@ -1,21 +1,21 @@
 config = {
     # Data params
     'data_path': 'data/olmo2_7b_residual_stream.h5',
-    'out_dir': 'out/sae_32k',
+    'out_dir': 'out/sae_131k',
     
     # Architecture params
     'input_size': 4096,  # OLMo2 7B hidden size
-    'hidden_size': 32_768,  # 32K features
+    'hidden_size': 131072,  # 128K features
     'init_scale': 0.1,
     
     # Training params
-    'batch_size': 4096,  # Adjusted as needed
+    'batch_size': 1024,  # Smaller batch size due to memory
     'learning_rate': 5e-5,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
     'lambda_l1': 5.0,
     
     # Wandb params
     'wandb_project': 'sae-training',
-    'wandb_name': 'sae_32k',
+    'wandb_name': 'sae_131k',
     'wandb_entity': "hbfreed",  # Add your wandb entity here
 }

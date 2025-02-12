@@ -1,17 +1,17 @@
 config = {
     # Data params
-    'data_path': 'data/llama32_1b_residual_stream_rank0.h5',
+    'data_path': 'data/olmo2_7b_residual_stream.h5',
     'out_dir': 'out/sae_8k',
     
     # Architecture params
-    'input_size': 2048,  # Llama 1B hidden size
-    'hidden_size': 8_192,  # 8K features
+    'input_size': 4096,
+    'hidden_size': 8_192,
     'init_scale': 0.1,
     
     # Training params
     'batch_size': 4096, #anthropic thinks even as high as 4096 is below the critical batch size
-    'learning_rate': 5e-5,  # Can be decreased if training unstable
-    'num_epochs': 1,  # Train on ~8B tokens 
+    'learning_rate': 5e-5,
+    'num_epochs': 1,
     'lambda_l1': 5.0,
     
     # Wandb params

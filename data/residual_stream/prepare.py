@@ -45,7 +45,7 @@ def collect_batch_residual_stream(model, tokenizer, texts, layer_idx, max_length
     collector = ResidualStreamCollector(model, layer_idx)
     collector.attach_hook()
 
-    # Tokenize and get actual processed text
+    # Tokenize
     inputs = tokenizer(
         texts, 
         return_tensors="pt",
@@ -53,8 +53,6 @@ def collect_batch_residual_stream(model, tokenizer, texts, layer_idx, max_length
         truncation=True,
         max_length=max_length
     )
-    # Get the actual text that went through the model
-    truncated_texts = tokenizer.batch_decode(inputs['input_ids'], skip_special_tokens=True)
     
     device = model.device
     inputs = {k: v.to(device, non_blocking=True) for k, v in inputs.items()}
@@ -65,16 +63,12 @@ def collect_batch_residual_stream(model, tokenizer, texts, layer_idx, max_length
 
     # Get residual stream and reshape to (batch_size * seq_length, hidden_size)
     residual_stream = collector.get_residual_stream().cpu()
-    batch_size, seq_length, hidden_size = residual_stream.shape
-    residual_stream = residual_stream.reshape(-1, hidden_size)
-    
-    # Repeat each text seq_length times since we're saving per-token residual streams
-    truncated_texts = [text for text in truncated_texts for _ in range(seq_length)]
+    residual_stream = residual_stream.reshape(-1, residual_stream.shape[-1])
     
     collector.remove_hook()
     collector.clear_residual_stream()
 
-    return residual_stream, truncated_texts
+    return residual_stream
 
 def create_dataset(
     dataset_name: str,
@@ -97,32 +91,25 @@ def create_dataset(
     
     # Load dataset
     dataset = load_dataset(
-    dataset_name,
-    split="train", 
-    num_proc=cpu_count(),  # Use all available CPU cores for loading
-    streaming=False,  # Disable streaming to load into memory
-    name="sample-10BT",
-)
+        dataset_name,
+        split="train", 
+        num_proc=cpu_count(),
+        streaming=False,
+        name="sample-10BT",
+    )
     hidden_size = model.config.hidden_size
 
     # Setup output file
     output_file = f"data/{output_file}_rank{distributed_state.process_index}.h5"
     
     with h5py.File(output_file, 'w') as f:
-        # Create datasets
+        # Create dataset for residual stream only
         residual_dset = f.create_dataset(
             'residual_stream',
             shape=(0, hidden_size),
             maxshape=(None, hidden_size),
             dtype='uint16',
             chunks=True
-        )
-        
-        text_dset = f.create_dataset(
-            'texts',
-            shape=(0,),
-            maxshape=(None,),
-            dtype=h5py.special_dtype(vlen=str)
         )
         
         # Add basic metadata
@@ -146,7 +133,7 @@ def create_dataset(
             
             if len(texts_buffer) == batch_size:
                 with distributed_state.split_between_processes(texts_buffer) as split_texts:
-                    residual_stream, processed_texts = collect_batch_residual_stream(
+                    residual_stream = collect_batch_residual_stream(
                         model, tokenizer, split_texts, middle_layer, max_length
                     )
                     
@@ -157,10 +144,6 @@ def create_dataset(
                     
                     residual_dset.resize((new_size, hidden_size))
                     residual_dset[current_size:new_size] = vectors
-                    
-                    # Save corresponding texts
-                    text_dset.resize((new_size,))
-                    text_dset[current_size:new_size] = processed_texts
                     
                     total_vectors += len(vectors)
                     
@@ -186,17 +169,11 @@ def consolidate_files(base_output_file: str, num_ranks: int):
             for key, value in f0.attrs.items():
                 f_out.attrs[key] = value
                 
-            # Create consolidated datasets
+            # Create consolidated dataset
             residual_dset = f_out.create_dataset(
                 'residual_stream',
                 shape=(total_vectors, hidden_size),
                 dtype='uint16'
-            )
-            
-            text_dset = f_out.create_dataset(
-                'texts',
-                shape=(total_vectors,),
-                dtype=h5py.special_dtype(vlen=str)
             )
             
             # Consolidate data
@@ -204,11 +181,8 @@ def consolidate_files(base_output_file: str, num_ranks: int):
             for rank_file in tqdm(rank_files, desc="Consolidating files"):
                 with h5py.File(rank_file, 'r') as f_rank:
                     vectors = f_rank['residual_stream'][:]
-                    texts = f_rank['texts'][:]
-                    
                     size = len(vectors)
                     residual_dset[current_idx:current_idx + size] = vectors
-                    text_dset[current_idx:current_idx + size] = texts
                     current_idx += size
                 
                 os.remove(rank_file)  # Clean up rank file
