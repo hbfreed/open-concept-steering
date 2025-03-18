@@ -149,7 +149,6 @@ def train_sae(config):
         init_scale=config.get('init_scale', 0.1)
     ).to(device)
     
-    # Setup optimizer (8-bit Adam with no weight decay)
     optimizer = bnb.optim.AdamW8bit(
         model.parameters(),
         lr=config['learning_rate'],
@@ -161,10 +160,8 @@ def train_sae(config):
     steps_per_epoch = len(dataloader)
     total_steps = config['num_epochs'] * steps_per_epoch
     
-    # Learning rate scheduler - linear decay to 0 over last 20% of training
     lr_scheduler = get_lr_scheduler(optimizer, warmup_steps=0, total_steps=total_steps)
     
-    # Lambda scheduler - increase from 0 to final over first 5% of training
     lambda_warmup_steps = int(0.05 * total_steps)
     lambda_fn = get_lambda_scheduler(
         optimizer, 
@@ -173,10 +170,8 @@ def train_sae(config):
         final_lambda=config['lambda_final']
     )
     
-    # Create output directory
     os.makedirs(config['out_dir'], exist_ok=True)
     
-    # Training loop
     global_step = 0
     for epoch in range(config['num_epochs']):
         print(f"Epoch {epoch+1}/{config['num_epochs']}")
@@ -190,16 +185,12 @@ def train_sae(config):
             data = data.to(device)
             optimizer.zero_grad()
             
-            # Forward pass
             reconstruction, features = model(data)
             
-            # Get current lambda value from scheduler
             current_lambda = lambda_fn(global_step)
             
-            # Compute loss
             loss = model.compute_loss(data, reconstruction, features, lambda_=current_lambda)
             
-            # Calculate components for logging
             with torch.no_grad():
                 recon_loss = nn.functional.mse_loss(reconstruction, data, reduction='mean')
                 sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1))
