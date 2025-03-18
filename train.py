@@ -19,7 +19,6 @@ class ZarrDataset(Dataset):
         self.data_paths = []
         self.normalize = normalize
         
-        # Find all .zarr directories in the data directory
         for path in Path(data_dir).glob("**/*.zarr"):
             if path.is_dir():
                 self.data_paths.append(path)
@@ -29,11 +28,9 @@ class ZarrDataset(Dataset):
         
         print(f"Found {len(self.data_paths)} .zarr directories")
         
-        # Open the first zarr to get sizes
         first_zarr = zarr.open(str(self.data_paths[0]), mode='r')
         self.vector_dim = first_zarr.shape[1]
         
-        # Calculate total number of vectors across all zarr files
         self.total_vectors = 0
         self.zarr_sizes = []
         for path in self.data_paths:
@@ -44,7 +41,6 @@ class ZarrDataset(Dataset):
         
         print(f"Total vectors: {self.total_vectors}, Vector dimension: {self.vector_dim}")
         
-        # For normalization calculation
         self._norm_factor = None
 
     def __len__(self):
@@ -55,7 +51,6 @@ class ZarrDataset(Dataset):
         if self._norm_factor is not None:
             return self._norm_factor
         
-        # Sample vectors to compute the expected L2 norm
         num_samples = min(10000, self.total_vectors)
         sample_indices = np.random.choice(self.total_vectors, num_samples, replace=False)
         
@@ -72,7 +67,6 @@ class ZarrDataset(Dataset):
         return self._norm_factor
     
     def __getitem__(self, idx):
-        # Find which zarr file contains this index
         for i, size in enumerate(self.zarr_sizes):
             if idx < size:
                 z = zarr.open(str(self.data_paths[i]), mode='r')
@@ -102,11 +96,9 @@ def get_lambda_scheduler(optimizer, warmup_steps, total_steps, final_lambda):
 def get_lr_scheduler(optimizer, warmup_steps, total_steps):
     """Linear warmup followed by linear decay to 0 over the last 20% of training"""
     def lr_lambda(step):
-        # Linear warmup for the first warmup_steps
         if step < warmup_steps:
             return step / max(1, warmup_steps)
         
-        # Linear decay to 0 for the last 20% of training
         decay_steps = total_steps - int(0.8 * total_steps)
         if step > int(0.8 * total_steps):
             return max(0.0, (total_steps - step) / max(1, decay_steps))
@@ -118,11 +110,9 @@ def get_lr_scheduler(optimizer, warmup_steps, total_steps):
 
 def train_sae(config):
     """Main training function for SAEs"""
-    # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Initialize wandb if specified
     if config.get('wandb_project'):
         wandb.init(
             project=config['wandb_project'],
@@ -131,7 +121,6 @@ def train_sae(config):
             config=config
         )
     
-    # Create the dataset and dataloader
     dataset = ZarrDataset(config['data_dir'], normalize=True)
     dataloader = DataLoader(
         dataset,
@@ -142,7 +131,6 @@ def train_sae(config):
         drop_last=True
     )
     
-    # Initialize the model
     model = SAE(
         input_size=config['input_size'],
         hidden_size=config['hidden_size'],
@@ -156,7 +144,6 @@ def train_sae(config):
         weight_decay=0.0
     )
     
-    # Calculate total steps and create schedulers
     steps_per_epoch = len(dataloader)
     total_steps = config['num_epochs'] * steps_per_epoch
     
@@ -195,19 +182,12 @@ def train_sae(config):
                 recon_loss = nn.functional.mse_loss(reconstruction, data, reduction='mean')
                 sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1))
             
-            # Backward pass
             loss.backward()
             
-            # Gradient clipping to 1.0
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            
-            # Update weights
             optimizer.step()
-            
-            # Update learning rate
             lr_scheduler.step()
             
-            # Update metrics
             running_loss += loss.item()
             running_recon_loss += recon_loss.item()
             running_sparsity += sparsity.item()
@@ -215,13 +195,11 @@ def train_sae(config):
             avg_recon_loss = running_recon_loss / (batch_idx + 1)
             avg_sparsity = running_sparsity / (batch_idx + 1)
             
-            # Update progress bar
             progress_bar.set_description(
                 f"Loss: {avg_loss:.6f}, Recon: {avg_recon_loss:.6f}, Sparsity: {avg_sparsity:.6f}, "
                 f"λ: {current_lambda:.3f}, LR: {optimizer.param_groups[0]['lr']:.6f}"
             )
             
-            # Log to wandb
             if config.get('wandb_project') and global_step % 10 == 0:
                 log_dict = {
                     'loss': loss.item(),
@@ -237,7 +215,6 @@ def train_sae(config):
             
             global_step += 1
         
-        # Save checkpoint after each epoch
         checkpoint = {
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
@@ -247,14 +224,12 @@ def train_sae(config):
         }
         torch.save(checkpoint, os.path.join(config['out_dir'], f"sae_checkpoint_epoch_{epoch}.pt"))
         
-        # Calculate and log per-epoch metrics
         epoch_loss = running_loss / len(dataloader)
         epoch_recon_loss = running_recon_loss / len(dataloader)
         epoch_sparsity = running_sparsity / len(dataloader)
         
         print(f"Epoch {epoch+1} stats: Loss: {epoch_loss:.6f}, Recon: {epoch_recon_loss:.6f}, Sparsity: {epoch_sparsity:.6f}")
     
-    # Save final model
     final_path = os.path.join(config['out_dir'], "sae_final.pt")
     torch.save({
         'model_state_dict': model.state_dict(),
@@ -293,7 +268,6 @@ if __name__ == "__main__":
         spec.loader.exec_module(config_module)
         config = config_module.config
     else:
-        # Use command line arguments
         config = {
             'data_dir': args.data_dir,
             'out_dir': args.out_dir,
