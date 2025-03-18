@@ -21,7 +21,7 @@ class SAE(nn.Module):
             
             self.decode.weight.data = decoder_weights
             self.encode.weight.data = decoder_weights.T.contiguous()
-            self.encode.bias.data.zero_()
+            self.encode.bias.data.zero_() #zero in place
             self.decode.bias.data.zero_()
     
     @property
@@ -51,7 +51,7 @@ class SAE(nn.Module):
         reconstruction_loss = F.mse_loss(reconstruction, x, reduction='mean')
 
         # Sparsity loss
-        feature_activations = torch.abs(features) #not sure if we need to take abs here because of ReLU, but it's in the paper
+        feature_activations = torch.abs(features) #don't really need abs here because of ReLU, but maybe keep for generality?
         sparsity_per_sample = torch.sum(feature_activations * self.get_decoder_norms(), dim=1)
         sparsity_penalty = torch.mean(sparsity_per_sample)
 
