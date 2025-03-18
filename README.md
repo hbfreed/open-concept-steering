@@ -4,7 +4,7 @@ Open Concept Steering is an open-source library for discovering and manipulating
 
 ## Features
 
-- **Universal Model Support**: Train SAEs on any HuggingFace transformer model
+- **Universal Model Support**: Train SAEs on any HuggingFace transformer model (starting with allenai/OLMo-2)
 - **Feature Discovery**: Find interpretable features representing specific concepts
 - **Concept Steering**: Amplify or suppress discovered features to influence model behavior
 - **Interactive Chat**: Chat with models while manipulating their internal features
