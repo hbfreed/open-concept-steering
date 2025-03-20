@@ -208,7 +208,8 @@ def train_sae(config):
     
     lr_scheduler = get_lr_scheduler(optimizer, warmup_steps=0, total_steps=total_steps)
     
-    lambda_warmup_steps = int(0.05 * total_steps)
+    lambda_warmup_steps = int(config.get('lambda_warmup_pct', 0.20) * total_steps) #we have substantially fewer samples, so make lambda warmup percentage larger
+    
     lambda_fn = get_lambda_scheduler(
         optimizer, 
         warmup_steps=lambda_warmup_steps,

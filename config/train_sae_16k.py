@@ -13,6 +13,7 @@ config = {
     'learning_rate': 5e-5,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
     'lambda_final': 5.0,  # Final lambda value after warmup
+    'lambda_warmup_pct': 0.20,
     
     # Wandb params
     'wandb_project': 'sae-training',
