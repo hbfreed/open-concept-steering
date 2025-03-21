@@ -10,7 +10,7 @@ config = {
     
     # Training params
     'batch_size': 512,  # Smaller batch size due to memory
-    'learning_rate': 5e-5,  # Lower learning rate for stability
+    'learning_rate': 5e-6,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
     'lambda_final': 5.0,
     'lambda_warmup_pct': 0.20,

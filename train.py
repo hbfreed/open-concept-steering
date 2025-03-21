@@ -75,7 +75,7 @@ class ZarrDataset(Dataset):
         for zarr_idx, local_indices in tqdm(grouped_indices.items(), desc="Sampling for normalization"):
             z = zarr.open(str(self.data_paths[zarr_idx]), mode='r')
             # Load all samples at once for this zarr file
-            batch = torch.from_numpy(z[local_indices]).to(torch.bfloat16)
+            batch = torch.from_numpy(z[local_indices]).view(torch.bfloat16)
             # Calculate norms and sum them
             norms = torch.linalg.vector_norm(batch, ord=2, dim=1)
             sum_norms += norms.sum().item()
@@ -85,6 +85,7 @@ class ZarrDataset(Dataset):
         
         # Target norm is sqrt(n) where n is input dimension
         target_norm = math.sqrt(self.vector_dim)
+        print(f"Target norm:{target_norm}, Avg norm: {avg_norm}")
         self._norm_factor = target_norm / avg_norm
         print(f"Normalization factor: {self._norm_factor}")
         return self._norm_factor
@@ -118,7 +119,7 @@ class ZarrDataset(Dataset):
             elements_to_take = min(remaining, zarr_size - local_idx)
             
             # Load the chunk
-            chunk = torch.from_numpy(z[local_idx:local_idx + elements_to_take]).to(torch.bfloat16)
+            chunk = torch.from_numpy(z[local_idx:local_idx + elements_to_take]).view(torch.bfloat16)
             batch.append(chunk)
             
             # Update counters
@@ -179,6 +180,7 @@ def train_sae(config):
         )
     
     dataset = ZarrDataset(config['data_dir'], normalize=True, batch_size=config['batch_size'])
+    norm_factor = dataset.get_normalization_factor()
 
     dataloader = DataLoader(
         dataset,
@@ -194,7 +196,8 @@ def train_sae(config):
         input_size=config['input_size'],
         hidden_size=config['hidden_size'],
         init_scale=config.get('init_scale', 0.1)
-    ).to(device)
+    ).to(device).to(torch.bfloat16)
+    model = torch.compile(model)
     
     optimizer = bnb.optim.AdamW8bit(
         model.parameters(),
@@ -208,7 +211,7 @@ def train_sae(config):
     
     lr_scheduler = get_lr_scheduler(optimizer, warmup_steps=0, total_steps=total_steps)
     
-    lambda_warmup_steps = int(config.get('lambda_warmup_pct', 0.20) * total_steps) #we have substantially fewer samples, so make lambda warmup percentage larger
+    lambda_warmup_steps = int(config.get('lambda_warmup_pct', 0.2) * total_steps) #we have substantially fewer samples, so make lambda warmup percentage larger
     
     lambda_fn = get_lambda_scheduler(
         optimizer, 
@@ -307,7 +310,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default="data", help="Directory containing zarr files")
     parser.add_argument("--out_dir", type=str, default="out/sae", help="Output directory")
     parser.add_argument("--input_size", type=int, default=4096, help="Input dimension")
-    parser.add_argument("--hidden_size", type=int, default=16384, help="Number of features")
+    parser.add_argument("--hidden_size", type=int, default=8192, help="Number of features")
     parser.add_argument("--batch_size", type=int, default=4096, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=1, help="Number of epochs")
