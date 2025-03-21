@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import torch
 import torch.nn as nn
 import numpy as np
@@ -138,8 +139,6 @@ class ZarrDataset(Dataset):
             batch = batch * self._norm_factor
             
         return batch
-
-
 
 def get_lambda_scheduler(optimizer, warmup_steps, total_steps, final_lambda):
     """Create a lambda scheduler that increases from 0 to final_lambda over warmup_steps"""
@@ -292,14 +291,46 @@ def train_sae(config):
         epoch_sparsity = running_sparsity / len(dataloader)
         
         print(f"Epoch {epoch+1} stats: Loss: {epoch_loss:.6f}, Recon: {epoch_recon_loss:.6f}, Sparsity: {epoch_sparsity:.6f}")
-    
+
+    with torch.no_grad():
+        sample_batch = next(iter(dataloader)).to(device)
+        reconstruction, features = model(sample_batch)
+        recon_loss = nn.functional.mse_loss(reconstruction, sample_batch, reduction='mean').item()
+        sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1)).item()
+        dead_features_pct = (features.abs().sum(0) == 0).float().mean().item() * 100
+
+    metrics = {
+        "final_recon_loss": recon_loss,
+        "final_sparsity": sparsity, 
+        "final_dead_features_pct": dead_features_pct,
+        "lambda_final": config["lambda_final"],
+        "lambda_warmup_pct": config.get("lambda_warmup_pct", 0.05),
+        "learning_rate": config["learning_rate"],
+        "epoch": epoch,
+        "global_step": global_step
+    }
+
+    if config.get('wandb_project'):
+        wandb.log({
+            "final_recon_loss": recon_loss,
+            "final_sparsity": sparsity,
+            "final_dead_features_pct": dead_features_pct,
+            "epoch_final": epoch,
+            "global_step_final": global_step
+        })
+
+    # Save metrics to file for Optuna
+    metrics_path = os.path.join(config["out_dir"], "metrics.json")
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+
     final_path = os.path.join(config['out_dir'], "sae_final.pt")
     torch.save({
         'model_state_dict': model.state_dict(),
         'config': config
     }, final_path)
     print(f"Training complete! Final model saved to {final_path}")
-    
+
     if config.get('wandb_project'):
         wandb.finish()
 
