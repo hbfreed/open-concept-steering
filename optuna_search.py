@@ -8,7 +8,7 @@ from datetime import datetime
 def objective(trial):
     """Optuna objective function to minimize"""
     # Define parameter space
-    lambda_final = trial.suggest_float("lambda_final", 5e-5, 0.5, log=True)
+    lambda_final = trial.suggest_float("lambda_final", 1e-4, 0.1, log=True)
     lambda_warmup_pct = trial.suggest_float("lambda_warmup_pct", 0.1, 1.)
     
     # Load base config

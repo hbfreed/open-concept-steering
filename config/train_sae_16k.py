@@ -9,10 +9,10 @@ config = {
     'init_scale': 0.1,
     
     # Training params
-    'batch_size': 4096,
+    'batch_size': 1024,
     'learning_rate': 5e-6,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
-    'lambda_final': 2.0,  # Final lambda value after warmup
+    'lambda_final': 0.0015,  # Final lambda value after warmup
     'lambda_warmup_pct': 0.50,
     
     # Wandb params

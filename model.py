@@ -29,6 +29,12 @@ class SAE(nn.Module):
         """Return the device the model parameters are on"""
         return next(self.parameters()).device
 
+    def constrain_weights(self):
+        """Constrain the decoder weights to have unit norm."""
+        with torch.no_grad():
+            decoder_norm = torch.linalg.vector_norm(self.decode.weight, dim=0, keepdim=True)
+            self.decode.weight.data = self.decode.weight.data / decoder_norm
+
     def forward(self, x):
         features = F.relu(self.encode(x))
         reconstruction = self.decode(features)

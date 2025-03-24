@@ -174,7 +174,7 @@ def resample_dead_neurons(model, dataloader, device, dead_feature_indices, track
         device: Torch device
         dead_feature_indices: Indices of features to resample
         tracking_window: How many steps to look back for dead features
-        optimizer: Optional optimizer to reset parameters
+        optimizer: Optional optimresample_dead_neuronsizer to reset parameters
     """
     if not dead_feature_indices:
         print("No dead features to resample")
@@ -345,6 +345,8 @@ def train_sae(config):
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             lr_scheduler.step()
+
+            model.constrain_weights()
             
             running_loss += loss.item()
             running_recon_loss += recon_loss.item()
