@@ -8,9 +8,8 @@ from datetime import datetime
 def objective(trial):
     """Optuna objective function to minimize"""
     # Define parameter space
-    lambda_final = trial.suggest_float("lambda_final", 0.001, 0.5, log=True)
-    lambda_warmup_pct = trial.suggest_float("lambda_warmup_pct", 0.3, 0.8)
-    learning_rate = trial.suggest_float("learning_rate", 1e-6, 5e-5, log=True)
+    lambda_final = trial.suggest_float("lambda_final", 5e-5, 0.5, log=True)
+    lambda_warmup_pct = trial.suggest_float("lambda_warmup_pct", 0.1, 1.)
     
     # Load base config
     spec = importlib.util.spec_from_file_location("config", args.base_config)
@@ -23,13 +22,13 @@ def objective(trial):
     os.makedirs(os.path.join(args.output_dir, "tmp_configs"), exist_ok=True)
     
     # Create a unique name for this run
-    run_name = f"trial_{trial.number}_lambda_{lambda_final:.4f}_warmup_{int(lambda_warmup_pct*100)}_lr_{learning_rate:.6f}"
+    run_name = f"trial_{trial.number}_lambda_{lambda_final:.4f}_warmup_{int(lambda_warmup_pct*100)}"
     
     # Create config dict for this run
     config = dict(base_config)
     config["lambda_final"] = lambda_final
     config["lambda_warmup_pct"] = lambda_warmup_pct
-    config["learning_rate"] = learning_rate
+    config["learning_rate"] = 5e-5 
     config["wandb_name"] = f"optuna_{run_name}"
     
     # Update output directory
@@ -42,7 +41,7 @@ def objective(trial):
         f.write(f"config = {repr(config)}")
     
     # Build command
-    cmd = ["python3", "train.py", "--config_path", config_path]
+    cmd = ["python3", "train.py", "--config_path", config_path, "--use_resampling"]
     
     try:
         # Run the training

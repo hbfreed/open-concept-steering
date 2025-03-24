@@ -10,9 +10,9 @@ config = {
     
     # Training params
     'batch_size': 4096, #anthropic thinks even as high as 4096 is below the critical batch size
-    'learning_rate': 5e-6,
+    'learning_rate': 5e-5,
     'num_epochs': 1,
-    'lambda_final': 5,
+    'lambda_final': 5e-5,
     'lambda_warmup_pct': 0.50,
     
     # Wandb params

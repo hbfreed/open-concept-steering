@@ -165,6 +165,89 @@ def get_lr_scheduler(optimizer, warmup_steps, total_steps):
     return LambdaLR(optimizer, lr_lambda)
 
 
+def resample_dead_neurons(model, dataloader, device, dead_feature_indices, tracking_window=12500, optimizer=None):
+    """Resample dead neurons following the approach from Towards Monosemanticity paper
+    
+    Args:
+        model: The SAE model
+        dataloader: DataLoader to sample inputs with high loss
+        device: Torch device
+        dead_feature_indices: Indices of features to resample
+        tracking_window: How many steps to look back for dead features
+        optimizer: Optional optimizer to reset parameters
+    """
+    if not dead_feature_indices:
+        print("No dead features to resample")
+        return
+    
+    print(f"Resampling {len(dead_feature_indices)} dead features")
+    
+    # Collect inputs for loss-weighted sampling
+    inputs = []
+    losses = []
+    
+    # Sample random inputs and compute loss
+    num_batches = min(32, len(dataloader))
+    batch_iter = iter(dataloader)
+    
+    for _ in tqdm(range(num_batches), desc="Collecting high-loss samples"):
+        batch = next(batch_iter).to(device)
+        with torch.no_grad():
+            reconstruction, _ = model(batch)
+            batch_losses = torch.sum((reconstruction - batch)**2, dim=1)
+        
+        inputs.append(batch)
+        losses.append(batch_losses)
+    
+    # Flatten everything
+    inputs = torch.cat(inputs, dim=0)
+    losses = torch.cat(losses, dim=0)
+    
+    # Square losses to weight selection towards high-loss samples (as per paper)
+    loss_weights = losses ** 2
+    loss_weights = loss_weights / loss_weights.sum()
+    
+    # Compute average encoder weight norm for scaling
+    with torch.no_grad():
+        alive_indices = [i for i in range(model.hidden_size) if i not in dead_feature_indices]
+        alive_encoder_weights = model.encoder.weight.data[alive_indices]
+        avg_encoder_norm = torch.norm(alive_encoder_weights, dim=1).mean().item() * 0.2
+    
+    # Resample each dead feature
+    for idx in tqdm(dead_feature_indices, desc="Resampling features"):
+        # Sample an input according to loss weights
+        input_idx = torch.multinomial(loss_weights, 1).item()
+        sampled_input = inputs[input_idx]
+        
+        # Normalize the input vector to unit L2 norm for decoder
+        with torch.no_grad():
+            # Set this as the new dictionary vector (decoder weight)
+            normalized_input = sampled_input / torch.norm(sampled_input)
+            model.decoder.weight.data[:, idx] = normalized_input
+            
+            # Scale input and set as encoder weight
+            model.encoder.weight.data[idx] = normalized_input * avg_encoder_norm
+            model.encoder.bias.data[idx] = 0.0
+            
+            # Reset optimizer state for these parameters if provided
+            if optimizer is not None:
+                # Reset Adam state for these specific parameters
+                state = optimizer.state.get(model.encoder.weight, None)
+                if state is not None and 'exp_avg' in state:
+                    state['exp_avg'][idx] = torch.zeros_like(state['exp_avg'][idx])
+                    state['exp_avg_sq'][idx] = torch.zeros_like(state['exp_avg_sq'][idx])
+                
+                state = optimizer.state.get(model.decoder.weight, None)
+                if state is not None and 'exp_avg' in state:
+                    state['exp_avg'][:, idx] = torch.zeros_like(state['exp_avg'][:, idx])
+                    state['exp_avg_sq'][:, idx] = torch.zeros_like(state['exp_avg_sq'][:, idx])
+                
+                state = optimizer.state.get(model.encoder.bias, None)
+                if state is not None and 'exp_avg' in state:
+                    state['exp_avg'][idx] = torch.zeros_like(state['exp_avg'][idx])
+                    state['exp_avg_sq'][idx] = torch.zeros_like(state['exp_avg_sq'][idx])
+
+
 def train_sae(config):
     """Main training function for SAEs"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -210,7 +293,7 @@ def train_sae(config):
     
     lr_scheduler = get_lr_scheduler(optimizer, warmup_steps=0, total_steps=total_steps)
     
-    lambda_warmup_steps = int(config.get('lambda_warmup_pct', 0.2) * total_steps) #we have substantially fewer samples, so make lambda warmup percentage larger
+    lambda_warmup_steps = int(config.get('lambda_warmup_pct', 0.05) * total_steps)
     
     lambda_fn = get_lambda_scheduler(
         optimizer, 
@@ -220,6 +303,14 @@ def train_sae(config):
     )
     
     os.makedirs(config['out_dir'], exist_ok=True)
+    
+    # Resampling configuration
+    do_resampling = config.get('use_resampling', False)
+    if do_resampling:
+        resample_steps = config.get('resample_steps', [15000, 30000, 45000, 60000])
+        tracking_window = config.get('tracking_window', 7500)  # Adjusted to be half of resampling interval
+        feature_activity = torch.zeros(config['hidden_size'], dtype=torch.bool, device=device)
+        last_resample_step = 0
     
     global_step = 0
     for epoch in range(config['num_epochs']):
@@ -243,6 +334,11 @@ def train_sae(config):
             with torch.no_grad():
                 recon_loss = nn.functional.mse_loss(reconstruction, data, reduction='mean')
                 sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1))
+                
+                # Track which features are active if we're doing resampling
+                if do_resampling:
+                    active_features = (features.abs().sum(0) > 0)
+                    feature_activity = feature_activity | active_features
             
             loss.backward()
             
@@ -275,6 +371,31 @@ def train_sae(config):
                 }
                 wandb.log(log_dict)
             
+            # Check if we need to do resampling
+            if do_resampling and global_step > 0 and global_step in resample_steps:
+                # Find features that haven't fired in the tracking window
+                dead_feature_indices = torch.where(~feature_activity)[0].cpu().tolist()
+                
+                # Resample dead features
+                resample_dead_neurons(
+                    model, 
+                    dataloader, 
+                    device, 
+                    dead_feature_indices,
+                    tracking_window,
+                    optimizer
+                )
+                
+                # Reset feature activity tracking
+                feature_activity = torch.zeros(config['hidden_size'], dtype=torch.bool, device=device)
+                last_resample_step = global_step
+                
+                if config.get('wandb_project'):
+                    wandb.log({
+                        'dead_features_resampled': len(dead_feature_indices),
+                        'global_step': global_step
+                    })
+            
             global_step += 1
         
         checkpoint = {
@@ -297,7 +418,7 @@ def train_sae(config):
         reconstruction, features = model(sample_batch)
         recon_loss = nn.functional.mse_loss(reconstruction, sample_batch, reduction='mean').item()
         sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1)).item()
-        dead_features_pct = (features.abs().sum(0) == 0).float().mean().item() * 100
+        dead_features_pct = (~feature_activity).float().mean().item() * 100
 
     metrics = {
         "final_recon_loss": recon_loss,
@@ -352,6 +473,13 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_name", type=str, default=None, help="Wandb run name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="Wandb entity name")
     
+    # Add resampling arguments
+    parser.add_argument("--use_resampling", action="store_true", help="Enable feature resampling")
+    parser.add_argument("--resample_steps", type=str, default="15000,30000,45000,60000", 
+                       help="Comma-separated list of steps to perform resampling")
+    parser.add_argument("--tracking_window", type=int, default=7500, 
+                       help="Number of steps to track feature activity before resampling")
+    
     args = parser.parse_args()
     
     # Check if a config file is provided
@@ -373,6 +501,12 @@ if __name__ == "__main__":
             'lambda_final': args.lambda_final,
             'init_scale': args.init_scale,
         }
+        
+        # Add resampling configuration
+        if args.use_resampling:
+            config['use_resampling'] = True
+            config['resample_steps'] = [int(s) for s in args.resample_steps.split(",")]
+            config['tracking_window'] = args.tracking_window
         
         if args.wandb:
             config['wandb_project'] = args.wandb_project
