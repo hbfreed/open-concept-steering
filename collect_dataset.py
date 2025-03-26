@@ -188,7 +188,7 @@ def save_activations_to_zarr(activations_list: List[torch.Tensor], save_path: st
 
 distributed_state = PartialState()
 model_config = AutoConfig.from_pretrained("allenai/OLMo-2-1124-7B-Instruct")
-model_config.num_hidden_layers = model_config.num_hidden_layers//2 #really only have to load half of the model if we're just getting the RS from halfway in, makes a warning
+model_config.num_hidden_layers = model_config.num_hidden_layers//2 #really only have to load half of the model if we're just getting the RS from halfway in
 model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-1124-7B-Instruct", 
                                             device_map=distributed_state.device, 
                                             torch_dtype=torch.bfloat16,

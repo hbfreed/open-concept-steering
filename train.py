@@ -305,11 +305,12 @@ def train_sae(config):
     os.makedirs(config['out_dir'], exist_ok=True)
     
     # Resampling configuration
+    feature_activity = torch.zeros(config['hidden_size'], dtype=torch.bool, device=device)
+    
     do_resampling = config.get('use_resampling', False)
     if do_resampling:
         resample_steps = config.get('resample_steps', [15000, 30000, 45000, 60000])
         tracking_window = config.get('tracking_window', 7500)  # Adjusted to be half of resampling interval
-        feature_activity = torch.zeros(config['hidden_size'], dtype=torch.bool, device=device)
         last_resample_step = 0
     
     global_step = 0
@@ -331,14 +332,18 @@ def train_sae(config):
             
             loss = model.compute_loss(data, reconstruction, features, lambda_=current_lambda)
             
+            # Inside the training loop where you're calculating other metrics
             with torch.no_grad():
                 recon_loss = nn.functional.mse_loss(reconstruction, data, reduction='mean')
                 sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1))
                 
-                # Track which features are active if we're doing resampling
-                if do_resampling:
-                    active_features = (features.abs().sum(0) > 0)
-                    feature_activity = feature_activity | active_features
+                # Add L0 norm calculation using torch.linalg.vector_norm
+                l0_norm = torch.mean(torch.linalg.vector_norm(features, ord=0, dim=1))
+                l0_sparsity = 1.0 - (l0_norm / model.hidden_size)
+                
+                active_features = (features.abs().sum(0) > 0)
+                feature_activity = feature_activity | active_features
+
             
             loss.backward()
             
@@ -354,7 +359,6 @@ def train_sae(config):
             avg_loss = running_loss / (batch_idx + 1)
             avg_recon_loss = running_recon_loss / (batch_idx + 1)
             avg_sparsity = running_sparsity / (batch_idx + 1)
-            
             progress_bar.set_description(
                 f"Loss: {avg_loss:.6f}, Recon: {avg_recon_loss:.6f}, Sparsity: {avg_sparsity:.6f}, "
                 f"λ: {current_lambda:.3f}, LR: {optimizer.param_groups[0]['lr']:.6f}"
@@ -365,9 +369,11 @@ def train_sae(config):
                     'loss': loss.item(),
                     'recon_loss': recon_loss.item(),
                     'sparsity': sparsity.item(),
+                    'l0_norm': l0_norm.item(),
+                    'l0_sparsity': l0_sparsity.item(),
                     'lambda': current_lambda,
                     'learning_rate': optimizer.param_groups[0]['lr'],
-                    'dead_features_pct': (features.abs().sum(0) == 0).float().mean().item() * 100,
+                    'dead_features_pct': (~feature_activity).float().mean().item() * 100,
                     'global_step': global_step,
                     'epoch': epoch
                 }

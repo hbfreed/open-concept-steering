@@ -23,7 +23,7 @@ class SAE(nn.Module):
             self.encode.weight.data = decoder_weights.T.contiguous()
             self.encode.bias.data.zero_() #zero in place
             self.decode.bias.data.zero_()
-    
+
     @property
     def device(self):
         """Return the device the model parameters are on"""

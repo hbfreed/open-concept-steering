@@ -10,10 +10,10 @@ config = {
     
     # Training params
     'batch_size': 1024,
-    'learning_rate': 5e-6,  # Lower learning rate for stability
+    'learning_rate': 5e-4,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
-    'lambda_final': 0.0015,  # Final lambda value after warmup
-    'lambda_warmup_pct': 0.50,
+    'lambda_final': 0.0005,  # Final lambda value after warmup
+    'lambda_warmup_pct': 0.05,
     
     # Wandb params
     'wandb_project': 'sae-training',

@@ -1,6 +1,6 @@
 config = {
     # Data params
-    'data_dir': 'data/combined_zarr',
+    'data_dir': 'data',
     'out_dir': 'out/sae_1m',
     
     # Architecture params

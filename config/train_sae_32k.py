@@ -1,6 +1,6 @@
 config = {
     # Data params
-    'data_dir': 'data/combined_zarr',
+    'data_dir': 'data',
     'out_dir': 'out/sae_32k',
     
     # Architecture params
@@ -9,11 +9,11 @@ config = {
     'init_scale': 0.1,
     
     # Training params
-    'batch_size': 4096,  # Adjusted as needed
-    'learning_rate': 5e-6,  # Lower learning rate for stability
+    'batch_size': 1024,  # Adjusted as needed
+    'learning_rate': 5e-5,  # Lower learning rate for stability
     'num_epochs': 1,  # Train on ~8B tokens
-    'lambda_final': 5.0,
-    'lambda_warmup_pct': 0.20,
+    'lambda_final': 0.0005,  # Final lambda value after warmup
+    'lambda_warmup_pct': 0.05,
     
     # Wandb params
     'wandb_project': 'sae-training',

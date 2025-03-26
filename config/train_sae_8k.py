@@ -1,6 +1,6 @@
 config = {
     # Data params
-    'data_dir': 'data/combined_zarr',
+    'data_dir': 'data',
     'out_dir': 'out/sae_8k',
     
     # Architecture params
@@ -12,8 +12,8 @@ config = {
     'batch_size': 4096, #anthropic thinks even as high as 4096 is below the critical batch size
     'learning_rate': 5e-5,
     'num_epochs': 1,
-    'lambda_final': 5e-5,
-    'lambda_warmup_pct': 0.50,
+    'lambda_final': 1e-3,
+    'lambda_warmup_pct': 0.05,
     
     # Wandb params
     'wandb_project': 'sae-training',
