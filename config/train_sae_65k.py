@@ -4,19 +4,19 @@ config = {
     'out_dir': 'out/sae_65k',
     
     # Architecture params
-    'input_size': 4096,  # Olmo 7B hidden size
-    'hidden_size': 65_536,  # 65K features
+    'input_size': 4096,
+    'hidden_size': 65_536,
     'init_scale': 0.1,
     
     # Training params
-    'batch_size': 2048,
-    'learning_rate': 5e-5,  # Can be decreased if training unstable
-    'num_epochs': 1,  # Train on ~8B tokens 
-    'lambda_final': 0.0005,  # Final lambda value after warmup
+    'batch_size': 4096,
+    'learning_rate': 5e-4,
+    'num_epochs': 2,
+    'lambda_final': 0.025,
     'lambda_warmup_pct': 0.05,
     
     # Wandb params
     'wandb_project': 'sae-training',
     'wandb_name': 'sae_65k',
-    'wandb_entity': "hbfreed",  # Add your wandb entity here
+    'wandb_entity': "hbfreed",
 }

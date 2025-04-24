@@ -1,9 +1,6 @@
 # Project specific
 data/
 further_combined_chunks/
-scaling_monosemanticity.md
-towards_monosemanticity.md
-update_on_training_saes.md
 
 # Python
 __pycache__/

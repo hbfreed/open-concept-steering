@@ -339,7 +339,7 @@ def train_sae(config):
                 
                 # Add L0 norm calculation using torch.linalg.vector_norm
                 l0_norm = torch.mean(torch.linalg.vector_norm(features, ord=0, dim=1))
-                l0_sparsity = 1.0 - (l0_norm / model.hidden_size)
+                l0_sparsity = 1.0 - (l0_norm / config['hidden_size'])
                 
                 active_features = (features.abs().sum(0) > 0)
                 feature_activity = feature_activity | active_features
