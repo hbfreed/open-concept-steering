@@ -210,7 +210,7 @@ def resample_dead_neurons(model, dataloader, device, dead_feature_indices, track
     # Compute average encoder weight norm for scaling
     with torch.no_grad():
         alive_indices = [i for i in range(model.hidden_size) if i not in dead_feature_indices]
-        alive_encoder_weights = model.encoder.weight.data[alive_indices]
+        alive_encoder_weights = model.encode.weight.data[alive_indices]
         avg_encoder_norm = torch.norm(alive_encoder_weights, dim=1).mean().item() * 0.2
     
     # Resample each dead feature
@@ -219,30 +219,30 @@ def resample_dead_neurons(model, dataloader, device, dead_feature_indices, track
         input_idx = torch.multinomial(loss_weights, 1).item()
         sampled_input = inputs[input_idx]
         
-        # Normalize the input vector to unit L2 norm for decoder
+        # Normalize the input vector to unit L2 norm for decode
         with torch.no_grad():
-            # Set this as the new dictionary vector (decoder weight)
+            # Set this as the new dictionary vector (decode weight)
             normalized_input = sampled_input / torch.norm(sampled_input)
-            model.decoder.weight.data[:, idx] = normalized_input
+            model.decode.weight.data[:, idx] = normalized_input
             
             # Scale input and set as encoder weight
-            model.encoder.weight.data[idx] = normalized_input * avg_encoder_norm
-            model.encoder.bias.data[idx] = 0.0
+            model.encode.weight.data[idx] = normalized_input * avg_encoder_norm
+            model.encode.bias.data[idx] = 0.0
             
             # Reset optimizer state for these parameters if provided
             if optimizer is not None:
                 # Reset Adam state for these specific parameters
-                state = optimizer.state.get(model.encoder.weight, None)
+                state = optimizer.state.get(model.encode.weight, None)
                 if state is not None and 'exp_avg' in state:
                     state['exp_avg'][idx] = torch.zeros_like(state['exp_avg'][idx])
                     state['exp_avg_sq'][idx] = torch.zeros_like(state['exp_avg_sq'][idx])
                 
-                state = optimizer.state.get(model.decoder.weight, None)
+                state = optimizer.state.get(model.decode.weight, None)
                 if state is not None and 'exp_avg' in state:
                     state['exp_avg'][:, idx] = torch.zeros_like(state['exp_avg'][:, idx])
                     state['exp_avg_sq'][:, idx] = torch.zeros_like(state['exp_avg_sq'][:, idx])
                 
-                state = optimizer.state.get(model.encoder.bias, None)
+                state = optimizer.state.get(model.encode.bias, None)
                 if state is not None and 'exp_avg' in state:
                     state['exp_avg'][idx] = torch.zeros_like(state['exp_avg'][idx])
                     state['exp_avg_sq'][idx] = torch.zeros_like(state['exp_avg_sq'][idx])
@@ -334,16 +334,18 @@ def train_sae(config):
             
             # Inside the training loop where you're calculating other metrics
             with torch.no_grad():
-                recon_loss = nn.functional.mse_loss(reconstruction, data, reduction='mean')
+                recon_loss = (reconstruction - data).pow(2).sum(-1).mean()
                 sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1))
                 
                 # Add L0 norm calculation using torch.linalg.vector_norm
                 l0_norm = torch.mean(torch.linalg.vector_norm(features, ord=0, dim=1))
                 l0_sparsity = 1.0 - (l0_norm / config['hidden_size'])
                 
-                active_features = (features.abs().sum(0) > 0)
-                feature_activity = feature_activity | active_features
+                if global_step % tracking_window == 0:      # start a fresh window
+                    feature_activity.zero_()
 
+                active_features = (features.abs().sum(0) > 0)
+                feature_activity |= active_features
             
             loss.backward()
             
@@ -351,8 +353,6 @@ def train_sae(config):
             optimizer.step()
             lr_scheduler.step()
 
-            model.constrain_weights()
-            
             running_loss += loss.item()
             running_recon_loss += recon_loss.item()
             running_sparsity += sparsity.item()
@@ -467,14 +467,14 @@ def train_sae(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a Sparse Autoencoder")
     parser.add_argument("--config_path", type=str, help="Path to config file")
-    parser.add_argument("--data_dir", type=str, default="data", help="Directory containing zarr files")
+    parser.add_argument("--data_dir", type=str, default="/media/henry/MoreFiles/olmo_dataset", help="Directory containing zarr files")
     parser.add_argument("--out_dir", type=str, default="out/sae", help="Output directory")
     parser.add_argument("--input_size", type=int, default=4096, help="Input dimension")
     parser.add_argument("--hidden_size", type=int, default=8192, help="Number of features")
     parser.add_argument("--batch_size", type=int, default=4096, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=1, help="Number of epochs")
-    parser.add_argument("--lambda_final", type=float, default=5.0, help="Final lambda value")
+    parser.add_argument("--lambda_final", type=float, default=1.0, help="Final lambda value")
     parser.add_argument("--init_scale", type=float, default=0.1, help="Weight initialization scale")
     parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
     parser.add_argument("--wandb_project", type=str, default="sae-training", help="Wandb project name")

@@ -38,18 +38,17 @@ class JSONTextDataset(Dataset):
 def init_zarr(path: str, hidden_dim: int, distributed_state: PartialState, chunk_idx: int = 0) -> zarr.Array:
     """Initialize a Zarr array with both rank and chunk index in the filename."""
     rank = distributed_state.process_index
-    chunk_path = f"{path}_rank{rank}_chunk{chunk_idx}"
-    store = zarr.DirectoryStore(chunk_path)
-    root = zarr.group(store=store)
+    chunk_path = f"/media/henry/MoreFiles/olmo_dataset/rank{rank}_chunk{chunk_idx}.zarr"
     
     # Check if the array already exists
-    if 'act' in root:
-        print(f"Using existing array 'act' at {chunk_path}")
-        return root['act']
+    if os.path.exists(chunk_path):
+        print(f"Using existing array at {chunk_path}")
+        return zarr.open(chunk_path, mode='a')
     
-    print(f"Creating new array 'act' at {chunk_path}")
-    return root.empty(
-        name="act",
+    print(f"Creating new array at {chunk_path}")
+    return zarr.open(
+        chunk_path,
+        mode='w',
         shape=(0, hidden_dim),
         chunks=(1024, hidden_dim),
         dtype=np.uint16,

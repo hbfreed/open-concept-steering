@@ -15,18 +15,20 @@ class SAE(nn.Module):
         self.decode = nn.Linear(hidden_size, input_size, bias=True)
                 
         with torch.no_grad():
-            # # Random directions
-            # decoder_weights = torch.randn(input_size, hidden_size) 
-            # # Normalize columns
-            # decoder_weights = decoder_weights / torch.linalg.vector_norm(decoder_weights, dim=0, keepdim=True)
-            # # Scale by random values between 0.05 and 1.0
-            # scales = torch.rand(hidden_size) * 0.95 + 0.05
-            # decoder_weights = decoder_weights * scales
+            # Random directions
+            decoder_weights = torch.randn(input_size, hidden_size) 
+            # Normalize columns
+            decoder_weights = decoder_weights / torch.linalg.vector_norm(decoder_weights, dim=0, keepdim=True)
+            # Scale by random values between 0.05 and 1.0
+            scales = torch.rand(hidden_size) * 0.95 + 0.05
+            decoder_weights = decoder_weights * scales
             
-            # self.decode.weight.data = decoder_weights
-            # self.encode.weight.data = decoder_weights.T.contiguous()
+            self.decode.weight.data = decoder_weights
+            self.encode.weight.data = decoder_weights.T.contiguous()
             self.encode.bias.data.zero_() #zero in place
             self.decode.bias.data.zero_()
+
+        self.constrain_weights()
 
     @property
     def device(self):
@@ -45,31 +47,20 @@ class SAE(nn.Module):
         return reconstruction, features
 
     def get_decoder_norms(self):
-        """Return L2 norms of decoder columns for loss calculation"""
-        return torch.linalg.vector_norm(self.decode.weight, ord=2, dim=0)
+        # returns a 1-D tensor (hidden_size,) on the right device/dtype
+        return torch.linalg.vector_norm(self.decode.weight, dim=0)
+
         
     @property
     def W_dec(self):
         """Return decoder weights for easier access during analysis"""
         return self.decode.weight
         
-    def compute_loss(self, x, reconstruction, features, lambda_=5.0):
-        """        
-        Args:
-            x: Input tensor: one of our residual stream vectors
-            reconstruction: Reconstructed input
-            features: Feature activations (after ReLU)
-            lambda_: Sparsity coefficient (default 5.0)
-        """
+    def compute_loss(self, x, recon, feats, _lambda):
+        # reconstruction term — sum over feature-dim, mean over batch
+        recon_mse = (recon - x).pow(2).sum(-1).mean()
 
-        # Reconstruction loss
-        reconstruction_loss = F.mse_loss(reconstruction, x, reduction='mean')
+        # sparsity term — L1 on feature activations * current decoder-column norms
+        sparsity = (feats.abs() * self.get_decoder_norms()).sum(1).mean()
 
-        # Sparsity loss
-        feature_activations = torch.abs(features) #don't really need abs here because of ReLU, but maybe keep for generality?
-        sparsity_per_sample = torch.sum(feature_activations * self.get_decoder_norms(), dim=1)
-        sparsity_penalty = torch.mean(sparsity_per_sample)
-
-        total_loss = reconstruction_loss + (lambda_ * sparsity_penalty)
-
-        return total_loss
+        return recon_mse + _lambda * sparsity
