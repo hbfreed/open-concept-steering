@@ -16,15 +16,9 @@ echo "Detected $gpu_count GPUs"
 
 # Define config files to run
 configs=(
-    "lambda_search_8k/train_sae_8k_lambda_0.01.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.00888.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.00777.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.00666.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.00555.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.00444.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.00333.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.00222.py"
-    "lambda_search_8k/train_sae_8k_lambda_0.001.py"
+    "train_sae_65k_lambda22.py"
+    "train_sae_65k_lambda24.py"
+    "train_sae_65k_lambda26.py"
 )
 
 # Run training based on available GPUs

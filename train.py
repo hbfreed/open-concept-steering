@@ -13,13 +13,15 @@ from tqdm import tqdm
 import argparse
 import wandb
 from model import SAE
+from sae_tracker import SAETracker
 
 class ZarrDataset(Dataset):
     """Dataset for loading .zarr directories stored in the data directory with batch loading"""
-    def __init__(self, data_dir, batch_size=4096, normalize=True):
+    def __init__(self, data_dir, batch_size=4096, normalize=True, norm_factor=None):
         self.data_paths = []
         self.normalize = normalize
         self.batch_size = batch_size
+        self._norm_factor = norm_factor
         
         # Find all zarr directories
         for path in Path(data_dir).glob("**/*.zarr"):
@@ -47,9 +49,7 @@ class ZarrDataset(Dataset):
             self.zarr_cumulative_sizes.append(self.zarr_cumulative_sizes[-1] + size)
             
         print(f"Total vectors: {self.total_vectors}, Vector dimension: {self.vector_dim}, Total batches: {self.total_vectors//self.batch_size}")
-        
-        # Normalization
-        self._norm_factor = None
+
         
     def __len__(self):
         return self.total_vectors // self.batch_size  # Return number of batches
@@ -58,7 +58,7 @@ class ZarrDataset(Dataset):
         """Calculate normalization factor so E[||x||₂] = √n"""
         if self._norm_factor is not None:
             return self._norm_factor
-            
+                
         print("Calculating normalization factor...")
         num_samples = min(10000, self.total_vectors)
         sample_indices = np.random.choice(self.total_vectors, num_samples, replace=False)
@@ -89,7 +89,9 @@ class ZarrDataset(Dataset):
         print(f"Target norm:{target_norm}, Avg norm: {avg_norm}")
         self._norm_factor = target_norm / avg_norm
         print(f"Normalization factor: {self._norm_factor}")
+        
         return self._norm_factor
+
     
     def _get_zarr_indices(self, global_idx: int):
         """Convert global index to (zarr_file_idx, local_idx)"""
@@ -249,7 +251,6 @@ def resample_dead_neurons(model, dataloader, device, dead_feature_indices, track
 
 
 def train_sae(config):
-    """Main training function for SAEs"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
@@ -260,15 +261,18 @@ def train_sae(config):
             entity=config.get('wandb_entity'),
             config=config
         )
-    
-    dataset = ZarrDataset(config['data_dir'], normalize=True, batch_size=config['batch_size'])
-    norm_factor = dataset.get_normalization_factor()
+    dataset = ZarrDataset(
+        config['data_dir'], 
+        normalize=True, 
+        batch_size=config['batch_size'],
+        norm_factor=config.get('norm_factor')
+    )
 
     dataloader = DataLoader(
         dataset,
-        batch_size=1, #funky looking because we set batch size in dataset
+        batch_size=1,
         shuffle=True,
-        num_workers=12, #found the num_workers and prefetch_factor with a grid search in dev.ipynb
+        num_workers=12,
         prefetch_factor=2, 
         pin_memory=True,
         drop_last=True
@@ -280,6 +284,18 @@ def train_sae(config):
         init_scale=config.get('init_scale', 0.1)
     ).to(device).to(torch.bfloat16)
     model = torch.compile(model)
+
+    steps_per_epoch = len(dataloader)
+    total_steps = config['num_epochs'] * steps_per_epoch
+    progress_bar = tqdm(total=total_steps, desc="Training SAE")
+    tracker = SAETracker(
+        model=model,
+        config=config,
+        out_dir=config['out_dir'],
+        progress_bar=progress_bar,
+        use_wandb=config.get('wandb_project') is not None
+    )
+
     
     optimizer = bnb.optim.AdamW8bit(
         model.parameters(),
@@ -287,9 +303,7 @@ def train_sae(config):
         betas=(0.9, 0.999),
         weight_decay=0.0
     )
-    
-    steps_per_epoch = len(dataloader)
-    total_steps = config['num_epochs'] * steps_per_epoch
+
     
     lr_scheduler = get_lr_scheduler(optimizer, warmup_steps=0, total_steps=total_steps)
     
@@ -305,107 +319,64 @@ def train_sae(config):
     os.makedirs(config['out_dir'], exist_ok=True)
     
     # Resampling configuration
-    feature_activity = torch.zeros(config['hidden_size'], dtype=torch.bool, device=device)
-    
     do_resampling = config.get('use_resampling', False)
-    if do_resampling:
-        resample_steps = config.get('resample_steps', [15000, 30000, 45000, 60000])
-        tracking_window = config.get('tracking_window', 7500)  # Adjusted to be half of resampling interval
-        last_resample_step = 0
-    
+    tracking_window = config.get('tracking_window', 7500)
+    resample_steps = config.get('resample_steps', [15000, 30000, 45000, 60000])
+
     global_step = 0
     for epoch in range(config['num_epochs']):
         print(f"Epoch {epoch+1}/{config['num_epochs']}")
         
-        running_loss = 0.0
-        running_recon_loss = 0.0
-        running_sparsity = 0.0
-        
-        progress_bar = tqdm(dataloader)
-        for batch_idx, data in enumerate(progress_bar):
-            data = data.to(device)
+        data_iter = iter(dataloader)
+        for batch_idx in range(len(dataloader)):
+            # Get data
+            data = next(data_iter).to(device)
             optimizer.zero_grad()
             
+            # Forward pass
             reconstruction, features = model(data)
-            
             current_lambda = lambda_fn(global_step)
-            
             loss = model.compute_loss(data, reconstruction, features, lambda_=current_lambda)
             
-            # Inside the training loop where you're calculating other metrics
-            with torch.no_grad():
-                recon_loss = (reconstruction - data).pow(2).sum(-1).mean()
-                sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1))
-                
-                # Add L0 norm calculation using torch.linalg.vector_norm
-                l0_norm = torch.mean(torch.linalg.vector_norm(features, ord=0, dim=1))
-                l0_sparsity = 1.0 - (l0_norm / config['hidden_size'])
-                
-                if global_step % tracking_window == 0:      # start a fresh window
-                    feature_activity.zero_()
-
-                active_features = (features.abs().sum(0) > 0)
-                feature_activity |= active_features
-            
+            tracker.track_step(
+                step=global_step,
+                epoch=epoch,
+                data=data,
+                reconstruction=reconstruction,
+                features=features,
+                loss=loss,
+                lambda_value=current_lambda,
+                lr=optimizer.param_groups[0]['lr']
+            )
+            # Backward pass
             loss.backward()
-            
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             lr_scheduler.step()
-
-            running_loss += loss.item()
-            running_recon_loss += recon_loss.item()
-            running_sparsity += sparsity.item()
-            avg_loss = running_loss / (batch_idx + 1)
-            avg_recon_loss = running_recon_loss / (batch_idx + 1)
-            avg_sparsity = running_sparsity / (batch_idx + 1)
-            progress_bar.set_description(
-                f"Loss: {avg_loss:.6f}, Recon: {avg_recon_loss:.6f}, Sparsity: {avg_sparsity:.6f}, "
-                f"λ: {current_lambda:.3f}, LR: {optimizer.param_groups[0]['lr']:.6f}"
-            )
-            
-            if config.get('wandb_project') and global_step % 10 == 0:
-                log_dict = {
-                    'loss': loss.item(),
-                    'recon_loss': recon_loss.item(),
-                    'sparsity': sparsity.item(),
-                    'l0_norm': l0_norm.item(),
-                    'l0_sparsity': l0_sparsity.item(),
-                    'lambda': current_lambda,
-                    'learning_rate': optimizer.param_groups[0]['lr'],
-                    'dead_features_pct': (~feature_activity).float().mean().item() * 100,
-                    'global_step': global_step,
-                    'epoch': epoch
-                }
-                wandb.log(log_dict)
             
             # Check if we need to do resampling
             if do_resampling and global_step > 0 and global_step in resample_steps:
-                # Find features that haven't fired in the tracking window
-                dead_feature_indices = torch.where(~feature_activity)[0].cpu().tolist()
+                # Get dead features from tracker
+                dead_feature_indices = tracker.identify_dead_features()
                 
                 # Resample dead features
-                resample_dead_neurons(
-                    model, 
-                    dataloader, 
-                    device, 
-                    dead_feature_indices,
-                    tracking_window,
-                    optimizer
-                )
-                
-                # Reset feature activity tracking
-                feature_activity = torch.zeros(config['hidden_size'], dtype=torch.bool, device=device)
-                last_resample_step = global_step
-                
-                if config.get('wandb_project'):
-                    wandb.log({
-                        'dead_features_resampled': len(dead_feature_indices),
-                        'global_step': global_step
-                    })
+                if dead_feature_indices:
+                    resample_dead_neurons(
+                        model, 
+                        dataloader, 
+                        device, 
+                        dead_feature_indices,
+                        tracking_window,
+                        optimizer
+                    )
+                    
+                    # Reset feature activity tracking
+                    tracker.reset_feature_tracking()
             
             global_step += 1
+
         
+        # Save checkpoint
         checkpoint = {
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
@@ -414,55 +385,23 @@ def train_sae(config):
             'config': config
         }
         torch.save(checkpoint, os.path.join(config['out_dir'], f"sae_checkpoint_epoch_{epoch}.pt"))
-        
-        epoch_loss = running_loss / len(dataloader)
-        epoch_recon_loss = running_recon_loss / len(dataloader)
-        epoch_sparsity = running_sparsity / len(dataloader)
-        
-        print(f"Epoch {epoch+1} stats: Loss: {epoch_loss:.6f}, Recon: {epoch_recon_loss:.6f}, Sparsity: {epoch_sparsity:.6f}")
-
-    with torch.no_grad():
-        sample_batch = next(iter(dataloader)).to(device)
-        reconstruction, features = model(sample_batch)
-        recon_loss = nn.functional.mse_loss(reconstruction, sample_batch, reduction='mean').item()
-        sparsity = torch.mean(torch.sum(torch.abs(features) * model.get_decoder_norms(), dim=1)).item()
-        dead_features_pct = (~feature_activity).float().mean().item() * 100
-
-    metrics = {
-        "final_recon_loss": recon_loss,
-        "final_sparsity": sparsity, 
-        "final_dead_features_pct": dead_features_pct,
-        "lambda_final": config["lambda_final"],
-        "lambda_warmup_pct": config.get("lambda_warmup_pct", 0.05),
-        "learning_rate": config["learning_rate"],
-        "epoch": epoch,
-        "global_step": global_step
-    }
-
-    if config.get('wandb_project'):
-        wandb.log({
-            "final_recon_loss": recon_loss,
-            "final_sparsity": sparsity,
-            "final_dead_features_pct": dead_features_pct,
-            "epoch_final": epoch,
-            "global_step_final": global_step
-        })
-
-    # Save metrics to file for Optuna
-    metrics_path = os.path.join(config["out_dir"], "metrics.json")
-    with open(metrics_path, "w") as f:
-        json.dump(metrics, f, indent=2)
-
+    
+    # Save final model
     final_path = os.path.join(config['out_dir'], "sae_final.pt")
     torch.save({
         'model_state_dict': model.state_dict(),
         'config': config
     }, final_path)
+    
+    # Let the tracker save the final metrics
+    tracker.save_final_metrics(final_path)
+    
     print(f"Training complete! Final model saved to {final_path}")
 
     if config.get('wandb_project'):
         wandb.finish()
 
+    progress_bar.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a Sparse Autoencoder")
@@ -474,14 +413,16 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4096, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=1, help="Number of epochs")
-    parser.add_argument("--lambda_final", type=float, default=1.0, help="Final lambda value")
+    parser.add_argument("--lambda_final", type=float, default=5.0, help="Final lambda value")
     parser.add_argument("--init_scale", type=float, default=0.1, help="Weight initialization scale")
     parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
     parser.add_argument("--wandb_project", type=str, default="sae-training", help="Wandb project name")
     parser.add_argument("--wandb_name", type=str, default=None, help="Wandb run name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="Wandb entity name")
-    
-    # Add resampling arguments
+    parser.add_argument("--norm_factor", type=float, default=0.7476, 
+                    help="Normalization factor for activations")
+    parser.add_argument("--lambda_override", type=float, default=None,
+                    help="Override lambda_final from config file. Applied after config is loaded.")
     parser.add_argument("--use_resampling", action="store_true", help="Enable feature resampling")
     parser.add_argument("--resample_steps", type=str, default="15000,30000,45000,60000", 
                        help="Comma-separated list of steps to perform resampling")
@@ -490,7 +431,6 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Check if a config file is provided
     if args.config_path:
         import importlib.util
         spec = importlib.util.spec_from_file_location("config", args.config_path)
@@ -509,8 +449,6 @@ if __name__ == "__main__":
             'lambda_final': args.lambda_final,
             'init_scale': args.init_scale,
         }
-        
-        # Add resampling configuration
         if args.use_resampling:
             config['use_resampling'] = True
             config['resample_steps'] = [int(s) for s in args.resample_steps.split(",")]
@@ -522,4 +460,37 @@ if __name__ == "__main__":
             if args.wandb_entity:
                 config['wandb_entity'] = args.wandb_entity
     
+    # Apply CLI overrides to the loaded/constructed config
+    if args.lambda_override is not None:
+        original_lambda = config.get('lambda_final', 'N/A')
+        config['lambda_final'] = args.lambda_override
+        print(f"Overriding lambda_final: '{original_lambda}' -> '{config['lambda_final']}' (from --lambda_override)")
+
+    if args.wandb_project != parser.get_default('wandb_project'): # If CLI --wandb_project is not the argparse default
+        original_project = config.get('wandb_project', 'N/A')
+        config['wandb_project'] = args.wandb_project
+        if original_project != config['wandb_project']:
+            print(f"Overriding wandb_project: '{original_project}' -> '{config['wandb_project']}' (from --wandb_project CLI)")
+    
+    if args.wandb_name is not None: # If CLI --wandb_name is provided
+        original_name = config.get('wandb_name', 'N/A')
+        config['wandb_name'] = args.wandb_name
+        if original_name != config['wandb_name']:
+            print(f"Overriding wandb_name: '{original_name}' -> '{config['wandb_name']}' (from --wandb_name CLI)")
+
+    if args.wandb_entity is not None: # If CLI --wandb_entity is provided
+        original_entity = config.get('wandb_entity', 'N/A')
+        config['wandb_entity'] = args.wandb_entity
+        if original_entity != config['wandb_entity']:
+            print(f"Overriding wandb_entity: '{original_entity}' -> '{config['wandb_entity']}' (from --wandb_entity CLI)")
+
+    # If W&B is active (project is set) but run name is missing, generate a default.
+    # This is a fallback, as run_training.sh will provide names.
+    if config.get('wandb_project') and not config.get('wandb_name'):
+        default_name_parts = [f"sae_{config.get('hidden_size', 'hs')}"]
+        if 'lambda_final' in config:
+            default_name_parts.append(f"lambda{config['lambda_final']}")
+        config['wandb_name'] = "_".join(default_name_parts)
+        print(f"W&B active, but wandb_name not set. Defaulting to: '{config['wandb_name']}'")
+
     train_sae(config)

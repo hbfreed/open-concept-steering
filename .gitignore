@@ -1,6 +1,8 @@
 # Project specific
 data/
 further_combined_chunks/
+out/
+wandb/
 
 # Python
 __pycache__/

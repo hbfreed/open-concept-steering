@@ -56,11 +56,11 @@ class SAE(nn.Module):
         """Return decoder weights for easier access during analysis"""
         return self.decode.weight
         
-    def compute_loss(self, x, recon, feats, _lambda):
+    def compute_loss(self, x, recon, feats, lambda_):
         # reconstruction term — sum over feature-dim, mean over batch
         recon_mse = (recon - x).pow(2).sum(-1).mean()
 
         # sparsity term — L1 on feature activations * current decoder-column norms
         sparsity = (feats.abs() * self.get_decoder_norms()).sum(1).mean()
 
-        return recon_mse + _lambda * sparsity
+        return recon_mse + lambda_ * sparsity

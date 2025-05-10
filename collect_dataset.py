@@ -69,8 +69,8 @@ def collect_residual_vectors(
     # Get the rank for logging
     rank = distributed_state.process_index
     
-    # Max file size (not a joke, 69 with our compression gets us just under 50 GB to be able to upload to hf)
-    MAX_CHUNK_SIZE_BYTES = 69 * 1024 * 1024 * 1024
+    # Max file size 
+    MAX_CHUNK_SIZE_BYTES = 60 * 1024 * 1024 * 1024
     
     # Initialize the first chunk
     current_chunk_idx = 0

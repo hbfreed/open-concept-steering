@@ -1,6 +1,6 @@
 config = {
     # Data params
-    'data_dir': 'data',
+    'data_dir': '/media/henry/MoreFiles/olmo_dataset',
     'out_dir': 'out/sae_65k',
     
     # Architecture params
@@ -11,8 +11,8 @@ config = {
     # Training params
     'batch_size': 4096,
     'learning_rate': 5e-4,
-    'num_epochs': 2,
-    'lambda_final': 0.025,
+    'num_epochs': 1,
+    'lambda_final': 20,
     'lambda_warmup_pct': 0.05,
     
     # Wandb params
