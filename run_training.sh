@@ -17,6 +17,8 @@ echo "Detected $gpu_count GPUs"
 # Define config files to run
 configs=(
     "train_sae_lambda_ramp_80to25.py"
+    "train_sae_lambda24.py"
+    "train_sae_lambda22.py"
 )
 
 # Run training based on available GPUs

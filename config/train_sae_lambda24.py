@@ -10,7 +10,7 @@ config = {
     
     # Training params
     'batch_size': 4096,
-    'learning_rate': 5e-4,
+    'learning_rate': 5e-5,
     'num_epochs': 1,
     'lambda_final': 24,
     'lambda_warmup_pct': 0.05,

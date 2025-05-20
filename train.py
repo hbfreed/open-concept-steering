@@ -404,6 +404,11 @@ def train_sae(config):
     progress_bar.close()
 
 if __name__ == "__main__":
+    torch.backends.cuda.matmul.allow_tf32  = True
+    torch.backends.cudnn.allow_tf32        = True
+    torch.set_float32_matmul_precision('high')
+    from accelerate import Accelerator
+    accelerator = Accelerator(mixed_precision='no')
     parser = argparse.ArgumentParser(description="Train a Sparse Autoencoder")
     parser.add_argument("--config_path", type=str, help="Path to config file")
     parser.add_argument("--data_dir", type=str, default="/media/henry/MoreFiles/olmo_dataset", help="Directory containing zarr files")

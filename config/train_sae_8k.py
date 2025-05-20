@@ -12,7 +12,7 @@ config = {
     'batch_size': 4096,
     'learning_rate': 5e-4,
     'num_epochs': 1,
-    'lambda_final': 7,
+    'lambda_final': 0,
     'lambda_warmup_pct': 0.05,
     
     # Wandb params
