@@ -11,12 +11,12 @@ from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, logging as hf_logging
 import zarr
 
-MODEL_NAME          = "allenai/OLMo-2-1124-7B-Instruct"
-LAYER_OFFSET        = -1              # −1 is last layer of half‑model
-TOKENS_PER_CONTEXT  = 256
-BATCH_SIZE          = 128
-TARGET_VECTORS      = 800_000_000      # change to billions when scaling up
-OUT_PATH            = "/media/henry/MoreFiles/olmo_dataset/rs_tokens.zarr"
+model_name = "allenai/OLMo-2-1124-7B-Instruct"
+layer_offset = -1              # −1 is last layer of half‑model
+tokens_per_context = 256
+batch_size = 128
+target_vectors = 800_000_000      # change to billions when scaling up
+out_path = "/media/henry/MoreFiles/olmo_dataset/rs_tokens.zarr"
 
 hf_logging.set_verbosity_error()
 torch.backends.cuda.matmul.allow_tf32  = True
@@ -70,7 +70,7 @@ def collect_residual_vectors(
     rank = distributed_state.process_index
     
     # Max file size 
-    MAX_CHUNK_SIZE_BYTES = 60 * 1024 * 1024 * 1024
+    max_chunk_size_bytes = 60 * 1024 * 1024 * 1024
     
     # Initialize the first chunk
     current_chunk_idx = 0
@@ -84,7 +84,7 @@ def collect_residual_vectors(
             return_tensors="pt",
             padding="max_length",
             truncation=True,
-            max_length=TOKENS_PER_CONTEXT,
+            max_length=tokens_per_context,
         ).to(device)
 
         with torch.inference_mode():
@@ -97,7 +97,7 @@ def collect_residual_vectors(
         
         # Check if adding this batch would exceed our size limit
         estimated_new_size = arr.nbytes + (vecs_u16.nbytes)
-        if estimated_new_size > MAX_CHUNK_SIZE_BYTES:
+        if estimated_new_size > max_chunk_size_bytes:
             # Close current chunk and log
             current_size_gb = arr.nbytes / 1e9
             print(f"✅ Rank {rank}, Chunk {current_chunk_idx}: {arr.shape[0]:,} vectors | {current_size_gb:.2f} GB")
@@ -129,21 +129,21 @@ if __name__ == "__main__":
     ds_state = PartialState()
 
     # half‑model to save VRAM
-    cfg = AutoConfig.from_pretrained(MODEL_NAME)
-    cfg.num_hidden_layers //= 2
+    config = AutoConfig.from_pretrained(model_name)
+    config.num_hidden_layers //= 2
     torch.backends.cuda.enable_flash_sdp(True)
     print(f"flash attention enabled: {torch.backends.cuda.flash_sdp_enabled()}")
 
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        config=cfg,
+        model_name,
+        config=config,
         torch_dtype=torch.bfloat16,
         attn_implementation="sdpa",    
         device_map=ds_state.device,
     ).eval()
     torch._dynamo.config.capture_scalar_outputs = True
     model = torch.compile(model, mode="reduce-overhead")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     dataset = load_dataset(
         "HuggingFaceFW/fineweb",
         split="train",
@@ -154,20 +154,20 @@ if __name__ == "__main__":
 
     dataloader = DataLoader(
         dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=cpu_count(),
         pin_memory=True,
         prefetch_factor=4,
     )
 
-    arr = init_zarr(OUT_PATH, hidden_dim=model.config.hidden_size,distributed_state=ds_state)
+    arr = init_zarr(out_path, hidden_dim=model.config.hidden_size,distributed_state=ds_state)
 
     collect_residual_vectors(
         model,
         tokenizer,
         dataloader,
-        target_vectors=TARGET_VECTORS,
-        out_path=OUT_PATH,
+        target_vectors=target_vectors,
+        out_path=out_path,
         distributed_state=ds_state,
     )

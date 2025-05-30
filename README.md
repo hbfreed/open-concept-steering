@@ -38,8 +38,18 @@ This project is licensed under the MIT License.
 
 ## Citation
 
-If you feel compelled to cite this library in your work, feel free to do so however you please.
+If you feel compelled to cite this library in your work, you're probably better off citing something else. If you still feel compelled, feel free to do so however you please. Here's one way for convenience:
+
+```bibtex
+@software{open_concept_steering,
+  title={Open Concept Steering},
+  author={Henry Freed},
+  year={2024},
+  url={https://github.com/henry/open-concept-steering},
+  note={Open-source library for discovering and manipulating interpretable features using Sparse Autoencoders}
+}
+```
 
 ## Acknowledgments
 
-This project builds upon the work described in ["Scaling Monosemanticity: Extracting Interpretable Features from Claude 3 Sonnet"](https://transformer-circuits.pub/2024/scaling-monosemanticity/) by Anthropic.
+This project builds upon the work described in ["Scaling Monosemanticity: Extracting Interpretable Features from Claude 3 Sonnet"](https://transformer-circuits.pub/2024/scaling-monosemanticity/) by Anthropic, as well as the papers that proceed it. 

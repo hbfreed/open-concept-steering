@@ -3,6 +3,7 @@ data/
 further_combined_chunks/
 out/
 wandb/
+dev.ipynb
 
 # Python
 __pycache__/
