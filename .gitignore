@@ -4,6 +4,9 @@ further_combined_chunks/
 out/
 wandb/
 dev.ipynb
+convert_to_safetensors.py
+*.safetensors
+sae_config.json
 
 # Python
 __pycache__/
