@@ -2,35 +2,19 @@
 
 Open Concept Steering is an open-source library for discovering and manipulating interpretable features in large language models using Sparse Autoencoders (SAEs). Inspired by Anthropic's work on [Scaling Monosemanticity](https://transformer-circuits.pub/2024/scaling-monosemanticity/) and [Golden Gate Claude](https://www.anthropic.com/news/golden-gate-claude), this project aims to make concept steering accessible to the broader research community.
 
-## Features
+Right now, this repository implements Sparse Autoencoder (SAE) feature steering for OLMo 2 7B, allowing for controlled concept amplification in model outputs. The project demonstrates three steering vectors (Batman/Bruce Wayne, Japan, and Baseball) and provides tools to discover and experiment with more features.
 
-- **Universal Model Support**: Train SAEs on any HuggingFace transformer model (starting with allenai/OLMo-2)
-- **Feature Discovery**: Find interpretable features representing specific concepts
-- **Concept Steering**: Amplify or suppress discovered features to influence model behavior
-- **Interactive Chat**: Chat with models while manipulating their internal features
+If you just want to chat with Batman OLMo, check the demo out (here)[https://huggingface.co/spaces/hbfreed/olmo2-sae-steering-demo].
+
+For a more full discussion of my motivations and musings, see the (blog post)[https://hbfreed.com/2025/06/09/open-concept-steering.html].
 
 ## Pre-trained Models
 
-We provide pre-trained SAEs and discovered features for popular models on HuggingFace:
+The weights of the 65k SAE can be found on (Hugging Face)[https://huggingface.co/open-concept-steering/olmo2-7b-sae-65k-v1].
 
-Each model repository includes:
-- Trained SAE weights
-- Catalog of discovered interpretable features
-- Example steering configurations
-- Performance benchmarks
+## Dataset
 
-
-## Quick Start
-
-In Progress!
-
-## Examples
-
-See the `examples/` directory for detailed notebooks demonstrating:
-- Training SAEs on different models
-- Finding and analyzing features
-- Steering model behavior
-- Interactive chat sessions
+The dataset, ~600 million residual streams, can be also be found on (Hugging Face)[https://huggingface.co/datasets/open-concept-steering/OLMo-2_Residual_Streams]
 
 ## License
 
@@ -52,4 +36,4 @@ If you feel compelled to cite this library in your work, you're probably better 
 
 ## Acknowledgments
 
-This project builds upon the work described in ["Scaling Monosemanticity: Extracting Interpretable Features from Claude 3 Sonnet"](https://transformer-circuits.pub/2024/scaling-monosemanticity/) by Anthropic, as well as the papers that proceed it. 
+This project is based directly upon the work described in ["Scaling Monosemanticity: Extracting Interpretable Features from Claude 3 Sonnet"](https://transformer-circuits.pub/2024/scaling-monosemanticity/) by Anthropic, as well as the preceding papers.
