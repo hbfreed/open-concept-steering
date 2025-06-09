@@ -4,35 +4,21 @@ Open Concept Steering is an open-source library for discovering and manipulating
 
 Right now, this repository implements Sparse Autoencoder (SAE) feature steering for OLMo 2 7B, allowing for controlled concept amplification in model outputs. The project demonstrates three steering vectors (Batman/Bruce Wayne, Japan, and Baseball) and provides tools to discover and experiment with more features.
 
-If you just want to chat with Batman OLMo, check the demo out (here)[https://huggingface.co/spaces/hbfreed/olmo2-sae-steering-demo].
+If you just want to chat with Batman OLMo, check the demo out [here](https://huggingface.co/spaces/hbfreed/olmo2-sae-steering-demo).
 
-For a more full discussion of my motivations and musings, see the (blog post)[https://hbfreed.com/2025/06/09/open-concept-steering.html].
+For a more full discussion of my motivations and musings, see the [blog post](https://hbfreed.com/2025/06/09/open-concept-steering.html).
 
 ## Pre-trained Models
 
-The weights of the 65k SAE can be found on (Hugging Face)[https://huggingface.co/open-concept-steering/olmo2-7b-sae-65k-v1].
+The weights of the 65k SAE can be found on [Hugging Face](https://huggingface.co/open-concept-steering/olmo2-7b-sae-65k-v1).
 
 ## Dataset
 
-The dataset, ~600 million residual streams, can be also be found on (Hugging Face)[https://huggingface.co/datasets/open-concept-steering/OLMo-2_Residual_Streams]
+The dataset, ~600 million residual streams, can be also be found on [Hugging Face](https://huggingface.co/datasets/open-concept-steering/OLMo-2_Residual_Streams)
 
 ## License
 
 This project is licensed under the MIT License.
-
-## Citation
-
-If you feel compelled to cite this library in your work, you're probably better off citing something else. If you still feel compelled, feel free to do so however you please. Here's one way for convenience:
-
-```bibtex
-@software{open_concept_steering,
-  title={Open Concept Steering},
-  author={Henry Freed},
-  year={2024},
-  url={https://github.com/henry/open-concept-steering},
-  note={Open-source library for discovering and manipulating interpretable features using Sparse Autoencoders}
-}
-```
 
 ## Acknowledgments
 
