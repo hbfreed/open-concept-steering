@@ -4,7 +4,7 @@ import json
 import torch
 import torch.nn as nn
 import numpy as np
-import zarr
+from datasets import load_dataset as hf_load_dataset
 from torch.utils.data import DataLoader, Dataset
 from torch.optim.lr_scheduler import LambdaLR
 import bitsandbytes as bnb
@@ -15,39 +15,38 @@ import wandb
 from model import SAE
 from sae_tracker import SAETracker
 
-class ZarrDataset(Dataset):
-    """Dataset for loading .zarr directories stored in the data directory with batch loading"""
+class ParquetDataset(Dataset):
+    """Dataset for loading .parquet files stored in the data directory with batch loading"""
     def __init__(self, data_dir, batch_size=4096, normalize=True, norm_factor=None):
-        self.data_paths = []
         self.normalize = normalize
         self.batch_size = batch_size
         self._norm_factor = norm_factor
-        
-        # Find all zarr directories
-        for path in Path(data_dir).glob("**/*.zarr"):
-            if path.is_dir():
-                self.data_paths.append(path)
-                
+
+        # Find all parquet files
+        self.data_paths = list(Path(data_dir).glob("**/*.parquet"))
+
         if not self.data_paths:
-            raise ValueError(f"No .zarr directories found in {data_dir}")
-        print(f"Found {len(self.data_paths)} .zarr directories")
-        
-        # Get dimensions from first zarr file
-        first_zarr = zarr.open(str(self.data_paths[0]), mode='r')
-        self.vector_dim = first_zarr.shape[1]
-        
-        # Calculate size of each zarr file and total number of vectors
-        self.total_vectors = 0
-        self.zarr_sizes = []
-        self.zarr_cumulative_sizes = [0]  # Starts with 0
-        
-        for path in self.data_paths:
-            z = zarr.open(str(path), mode='r')
-            size = z.shape[0]
-            self.zarr_sizes.append(size)
-            self.total_vectors += size
-            self.zarr_cumulative_sizes.append(self.zarr_cumulative_sizes[-1] + size)
-            
+            raise ValueError(f"No .parquet files found in {data_dir}")
+        print(f"Found {len(self.data_paths)} .parquet files")
+
+        # Load all parquet files into a single dataset
+        print("Loading parquet files...")
+        datasets = []
+        for path in tqdm(self.data_paths, desc="Loading parquet files"):
+            ds = hf_load_dataset('parquet', data_files=str(path), split='train')
+            datasets.append(ds)
+
+        # Concatenate all datasets
+        from datasets import concatenate_datasets
+        self.dataset = concatenate_datasets(datasets)
+
+        # Get dimensions from first example
+        first_example = self.dataset[0]['residual_stream']
+        if isinstance(first_example, list):
+            first_example = np.array(first_example)
+        self.vector_dim = len(first_example)
+        self.total_vectors = len(self.dataset)
+
         print(f"Total vectors: {self.total_vectors}, Vector dimension: {self.vector_dim}, Total batches: {self.total_vectors//self.batch_size}")
 
         
@@ -58,88 +57,65 @@ class ZarrDataset(Dataset):
         """Calculate normalization factor so E[||x||₂] = √n"""
         if self._norm_factor is not None:
             return self._norm_factor
-                
+
         print("Calculating normalization factor...")
         num_samples = min(10000, self.total_vectors)
         sample_indices = np.random.choice(self.total_vectors, num_samples, replace=False)
-        
-        # Group indices by zarr file for efficient loading
-        grouped_indices = {}
-        for idx in sample_indices:
-            zarr_idx, local_idx = self._get_zarr_indices(idx)
-            if zarr_idx not in grouped_indices:
-                grouped_indices[zarr_idx] = []
-            grouped_indices[zarr_idx].append(local_idx)
-        
+
         # Sum of norms (not squared norms)
         sum_norms = 0.0
-        for zarr_idx, local_indices in tqdm(grouped_indices.items(), desc="Sampling for normalization"):
-            z = zarr.open(str(self.data_paths[zarr_idx]), mode='r')
-            # Load all samples at once for this zarr file
-            batch = torch.from_numpy(z[local_indices]).view(torch.bfloat16)
-            # Calculate norms and sum them
-            norms = torch.linalg.vector_norm(batch, ord=2, dim=1)
-            sum_norms += norms.sum().item()
-            
+        for idx in tqdm(sample_indices, desc="Sampling for normalization"):
+            sample = self.dataset[int(idx)]['residual_stream']
+            # Convert to tensor and view as bfloat16
+            if isinstance(sample, list):
+                sample = np.array(sample)
+            tensor = torch.from_numpy(sample).view(torch.bfloat16)
+            # Calculate norm
+            norm = torch.linalg.vector_norm(tensor, ord=2)
+            sum_norms += norm.item()
+
         # Average L2 norm
         avg_norm = sum_norms / num_samples
-        
+
         # Target norm is sqrt(n) where n is input dimension
         target_norm = math.sqrt(self.vector_dim)
         print(f"Target norm:{target_norm}, Avg norm: {avg_norm}")
         self._norm_factor = target_norm / avg_norm
         print(f"Normalization factor: {self._norm_factor}")
-        
+
         return self._norm_factor
 
-    
-    def _get_zarr_indices(self, global_idx: int):
-        """Convert global index to (zarr_file_idx, local_idx)"""
-        for i in range(len(self.zarr_sizes)):
-            if global_idx < self.zarr_cumulative_sizes[i+1]:
-                return i, global_idx - self.zarr_cumulative_sizes[i]
-        raise IndexError(f"Index {global_idx} out of bounds")
-    
+
     def __getitem__(self, batch_idx):
         # Convert batch index to global start index
         global_start_idx = batch_idx * self.batch_size
-        
-        # This will store our batch
-        batch = []
-        remaining = self.batch_size
-        current_global_idx = global_start_idx
-        
-        # Keep collecting vectors until we have a full batch
-        while remaining > 0:
-            # Find which zarr file this index belongs to
-            zarr_idx, local_idx = self._get_zarr_indices(current_global_idx)
-            
-            # Open the zarr file
-            z = zarr.open(str(self.data_paths[zarr_idx]), mode='r')
-            
-            # Calculate how many elements we can take from current zarr file
-            zarr_size = self.zarr_sizes[zarr_idx]
-            elements_to_take = min(remaining, zarr_size - local_idx)
-            
-            # Load the chunk
-            chunk = torch.from_numpy(z[local_idx:local_idx + elements_to_take]).view(torch.bfloat16)
-            batch.append(chunk)
-            
-            # Update counters
-            remaining -= elements_to_take
-            current_global_idx += elements_to_take
-            
-            # If we've reached the end of the dataset, wrap around
-            if current_global_idx >= self.total_vectors:
-                current_global_idx = 0
-                
-        # Concatenate all chunks into a single batch
-        batch = torch.cat(batch, dim=0)
-        
+
+        # Calculate end index with wrapping
+        global_end_idx = global_start_idx + self.batch_size
+
+        # Handle wrapping around the dataset
+        if global_end_idx <= self.total_vectors:
+            # Simple case: no wrapping needed
+            indices = list(range(global_start_idx, global_end_idx))
+        else:
+            # Wrapping case: get items from end and beginning
+            indices = list(range(global_start_idx, self.total_vectors)) + \
+                     list(range(0, global_end_idx - self.total_vectors))
+
+        # Load batch from dataset
+        batch_data = self.dataset[indices]['residual_stream']
+
+        # Convert to numpy array if needed, then to tensor
+        if not isinstance(batch_data, np.ndarray):
+            batch_data = np.array(batch_data)
+
+        # View as bfloat16 (data is stored as uint16)
+        batch = torch.from_numpy(batch_data).view(torch.bfloat16)
+
         # Apply normalization if needed
         if self.normalize and self._norm_factor is not None:
             batch = batch * self._norm_factor
-            
+
         return batch
 
 def get_lambda_scheduler(optimizer, warmup_steps, total_steps, final_lambda):
@@ -261,9 +237,9 @@ def train_sae(config):
             entity=config.get('wandb_entity'),
             config=config
         )
-    dataset = ZarrDataset(
-        config['data_dir'], 
-        normalize=True, 
+    dataset = ParquetDataset(
+        config['data_dir'],
+        normalize=True,
         batch_size=config['batch_size'],
         norm_factor=config.get('norm_factor')
     )
@@ -411,7 +387,7 @@ if __name__ == "__main__":
     accelerator = Accelerator(mixed_precision='no')
     parser = argparse.ArgumentParser(description="Train a Sparse Autoencoder")
     parser.add_argument("--config_path", type=str, help="Path to config file")
-    parser.add_argument("--data_dir", type=str, default="/media/henry/MoreFiles/olmo_dataset", help="Directory containing zarr files")
+    parser.add_argument("--data_dir", type=str, default="/media/henry/MoreFiles/olmo_dataset", help="Directory containing parquet files")
     parser.add_argument("--out_dir", type=str, default="out/sae", help="Output directory")
     parser.add_argument("--input_size", type=int, default=4096, help="Input dimension")
     parser.add_argument("--hidden_size", type=int, default=8192, help="Number of features")
