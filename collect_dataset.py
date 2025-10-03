@@ -4,19 +4,18 @@ from typing import Iterable, Tuple, List, Any
 import numpy as np
 import torch
 from accelerate import PartialState
-from datasets import load_dataset
+from datasets import load_dataset, Dataset as HFDataset
 from psutil import cpu_count
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, logging as hf_logging
-import zarr
 
 model_name = "allenai/OLMo-2-1124-7B-Instruct"
 layer_offset = -1              # −1 is last layer of half‑model
 tokens_per_context = 256
 batch_size = 128
 target_vectors = 800_000_000      # change to billions when scaling up
-out_path = "/media/henry/MoreFiles/olmo_dataset/rs_tokens.zarr"
+out_dir = "/media/henry/MoreFiles/olmo_dataset"
 
 hf_logging.set_verbosity_error()
 torch.backends.cuda.matmul.allow_tf32  = True
@@ -35,48 +34,47 @@ class JSONTextDataset(Dataset):
         key = str(self.keys[idx])
         return {"text": self.data[key]}
     
-def init_zarr(path: str, hidden_dim: int, distributed_state: PartialState, chunk_idx: int = 0) -> zarr.Array:
-    """Initialize a Zarr array with both rank and chunk index in the filename."""
-    rank = distributed_state.process_index
-    chunk_path = f"/media/henry/MoreFiles/olmo_dataset/rank{rank}_chunk{chunk_idx}.zarr"
-    
-    # Check if the array already exists
-    if os.path.exists(chunk_path):
-        print(f"Using existing array at {chunk_path}")
-        return zarr.open(chunk_path, mode='a')
-    
-    print(f"Creating new array at {chunk_path}")
-    return zarr.open(
-        chunk_path,
-        mode='w',
-        shape=(0, hidden_dim),
-        chunks=(1024, hidden_dim),
-        dtype=np.uint16,
-        compressor=zarr.Blosc(cname="zstd", clevel=7, shuffle=2),
-    )
+def save_chunk_to_parquet(vectors: List[np.ndarray], out_dir: str, rank: int, chunk_idx: int):
+    """Save accumulated vectors as a parquet file."""
+    os.makedirs(out_dir, exist_ok=True)
+    chunk_path = f"{out_dir}/rank{rank}_chunk{chunk_idx}.parquet"
+
+    # Concatenate all vectors
+    all_vectors = np.concatenate(vectors, axis=0)
+
+    # Create HuggingFace dataset
+    dataset = HFDataset.from_dict({
+        "residual_stream": all_vectors
+    })
+
+    # Save as parquet
+    dataset.to_parquet(chunk_path)
+
+    print(f"✅ Saved chunk to {chunk_path}: {all_vectors.shape[0]:,} vectors | {all_vectors.nbytes / 1e9:.2f} GB")
+
+    return all_vectors.shape[0], all_vectors.nbytes
 
 def collect_residual_vectors(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     dataloader: DataLoader,
     target_vectors: int,
-    out_path: str,
+    out_dir: str,
     distributed_state: PartialState,
 ):
     device = distributed_state.device
     pad_id = tokenizer.pad_token_id
     total_written = 0
-    # Get the rank for logging
     rank = distributed_state.process_index
-    
-    # Max file size 
+
+    # Max file size (60GB)
     max_chunk_size_bytes = 60 * 1024 * 1024 * 1024
-    
-    # Initialize the first chunk
+
+    # Initialize storage for current chunk
     current_chunk_idx = 0
-    hidden_dim = model.config.hidden_size
-    arr = init_zarr(out_path, hidden_dim, distributed_state, current_chunk_idx)
-    
+    current_chunk_vectors = []
+    current_chunk_bytes = 0
+
     progress = tqdm(dataloader, disable=not distributed_state.is_main_process)
     for batch in progress:
         tokens = tokenizer(
@@ -94,36 +92,39 @@ def collect_residual_vectors(
         mask = (tokens["input_ids"] != pad_id)  # (B, T)
         vecs = resid[mask]  # (N, d) contiguous
         vecs_u16 = vecs.view(torch.uint16).cpu().numpy()
-        
+
         # Check if adding this batch would exceed our size limit
-        estimated_new_size = arr.nbytes + (vecs_u16.nbytes)
-        if estimated_new_size > max_chunk_size_bytes:
-            # Close current chunk and log
-            current_size_gb = arr.nbytes / 1e9
-            print(f"✅ Rank {rank}, Chunk {current_chunk_idx}: {arr.shape[0]:,} vectors | {current_size_gb:.2f} GB")
-            
-            # Create a new chunk
+        estimated_new_size = current_chunk_bytes + vecs_u16.nbytes
+        if estimated_new_size > max_chunk_size_bytes and len(current_chunk_vectors) > 0:
+            # Save current chunk
+            save_chunk_to_parquet(current_chunk_vectors, out_dir, rank, current_chunk_idx)
+
+            # Start a new chunk
             current_chunk_idx += 1
-            arr = init_zarr(out_path, hidden_dim, distributed_state, current_chunk_idx)
-        
+            current_chunk_vectors = []
+            current_chunk_bytes = 0
+
         # Append to current chunk
-        arr.append(vecs_u16)
-        
+        current_chunk_vectors.append(vecs_u16)
+        current_chunk_bytes += vecs_u16.nbytes
+
         vectors_in_batch = vecs_u16.shape[0]
         total_written += vectors_in_batch
-        
-        # Calculate file size for progress reporting
-        size_gb = arr.nbytes / 1e9
-        progress.set_description(f"Rank {rank}, Chunk {current_chunk_idx}: {arr.shape[0]:,} vectors | {size_gb:.2f} GB | Total: {total_written:,}")
+
+        # Calculate current chunk stats for progress reporting
+        num_vectors = sum(v.shape[0] for v in current_chunk_vectors)
+        size_gb = current_chunk_bytes / 1e9
+        progress.set_description(f"Rank {rank}, Chunk {current_chunk_idx}: {num_vectors:,} vectors | {size_gb:.2f} GB | Total: {total_written:,}")
 
         # Check if we've reached the target vectors for this rank
         if total_written >= target_vectors // distributed_state.num_processes:
             break
 
-    # Log the final statistics
-    final_size_gb = arr.nbytes / 1e9
+    # Save any remaining vectors
+    if len(current_chunk_vectors) > 0:
+        save_chunk_to_parquet(current_chunk_vectors, out_dir, rank, current_chunk_idx)
+
     print(f"✅ Rank {rank} finished: {total_written:,} total vectors across {current_chunk_idx + 1} chunks")
-    print(f"  - Current chunk {current_chunk_idx}: {arr.shape[0]:,} vectors | {final_size_gb:.2f} GB")
 
 if __name__ == "__main__":
     ds_state = PartialState()
@@ -161,13 +162,11 @@ if __name__ == "__main__":
         prefetch_factor=4,
     )
 
-    arr = init_zarr(out_path, hidden_dim=model.config.hidden_size,distributed_state=ds_state)
-
     collect_residual_vectors(
         model,
         tokenizer,
         dataloader,
         target_vectors=target_vectors,
-        out_path=out_path,
+        out_dir=out_dir,
         distributed_state=ds_state,
     )
