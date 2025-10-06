@@ -79,8 +79,11 @@ cp .env.example .env
 
 ```python
 import torch
+import json
 from model import SAE
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -91,9 +94,20 @@ model = AutoModelForCausalLM.from_pretrained(
 ).to(device)
 tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-2-1124-7B-Instruct")
 
-# Load pre-trained SAE
-sae_path = "path/to/sae_final.pt"
-state_dict, config = torch.load(sae_path, map_location=device).values()
+# Load pre-trained SAE from HuggingFace Hub
+sae_path = hf_hub_download(
+    repo_id="open-concept-steering/olmo2-7b-sae-65k-v1",
+    filename="sae_weights.safetensors"
+)
+config_path = hf_hub_download(
+    repo_id="open-concept-steering/olmo2-7b-sae-65k-v1",
+    filename="sae_config.json"
+)
+
+state_dict = load_file(sae_path)
+with open(config_path) as f:
+    config = json.load(f)
+
 sae = SAE(config['input_size'], config['hidden_size']).to(device).to(torch.bfloat16)
 sae.load_state_dict(state_dict)
 
@@ -168,6 +182,42 @@ wandb login
 ```
 
 ### Loading a Pre-trained SAE
+
+**From HuggingFace Hub (recommended):**
+
+```python
+import torch
+import json
+from model import SAE
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
+
+device = "cuda"
+
+# Download from HuggingFace Hub
+sae_path = hf_hub_download(
+    repo_id="open-concept-steering/olmo2-7b-sae-65k-v1",
+    filename="sae_weights.safetensors"
+)
+config_path = hf_hub_download(
+    repo_id="open-concept-steering/olmo2-7b-sae-65k-v1",
+    filename="sae_config.json"
+)
+
+# Load weights and config
+state_dict = load_file(sae_path)
+with open(config_path) as f:
+    config = json.load(f)
+
+# Initialize and load
+sae = SAE(config['input_size'], config['hidden_size']).to(device).to(torch.bfloat16)
+sae.load_state_dict(state_dict)
+sae.eval()
+
+print(f"Loaded SAE with {config['hidden_size']} features")
+```
+
+**From local checkpoint:**
 
 ```python
 import torch
